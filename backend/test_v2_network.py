@@ -467,3 +467,149 @@ def test_company_qids_are_read_from_the_field_discovery_writes():
         if qid and str(qid).upper().startswith("Q")
     ]
     assert qids == ["Q111", "Q222"]
+
+
+# ---------------------------------------------------------------------------
+# Officer lookup: lighter query, fails fast
+# ---------------------------------------------------------------------------
+
+from affluense import config as _v1config  # noqa: E402
+from affluense_v2 import config as _v2config  # noqa: E402
+from affluense_v2.network import officers  # noqa: E402
+
+
+def test_officer_query_uses_a_values_clause_not_a_union():
+    """A six-way UNION is what the Query Service struggles to plan, and what
+    returned 504 once every connected company was asked about at once."""
+    query = officers.build_query("Q123", 12)
+    assert "UNION" not in query
+    assert "VALUES ?prop" in query
+    assert "wd:Q123" in query
+    assert "LIMIT 12" in query
+
+
+def test_officer_query_covers_every_v1_officer_property():
+    """Lighter must not mean narrower: the same relationships are asked for."""
+    query = officers.build_query("Q123", 12)
+    for prop in _v1config.ORG_TO_PERSON:
+        assert f"wdt:{prop}" in query, prop
+
+
+def test_officer_lookup_fails_fast_rather_than_slowly():
+    assert _v2config.SPARQL_TIMEOUT < _v1config.SPARQL_TIMEOUT
+    assert _v2config.SPARQL_ATTEMPTS < 3
+
+
+def test_company_cap_bounds_the_number_of_queries():
+    assert _v2config.OFFICER_COMPANY_CAP >= 1
+
+
+class RecordingTransport(FakeTransport):
+    """Counts queries and can answer, fail, or time out."""
+
+    def __init__(self, payload=None):
+        super().__init__()
+        self.payload = payload
+        self.queries = []
+
+    async def get_json(self, url, params=None, headers=None, timeout=None,
+                       attempts=None):
+        self.queries.append(params.get("query") if params else None)
+        return self.payload
+
+
+def _binding(qid, label, prop):
+    return {
+        "person": {"value": f"http://www.wikidata.org/entity/{qid}"},
+        "personLabel": {"value": label},
+        "prop": {"value": f"http://www.wikidata.org/prop/direct/{prop}"},
+    }
+
+
+def test_officers_are_parsed_with_their_roles():
+    payload = {"results": {"bindings": [
+        _binding("Q1", "Dana Okonkwo", "P169"),
+        _binding("Q1", "Dana Okonkwo", "P112"),
+        _binding("Q2", "Tomas Lindqvist", "P488"),
+    ]}}
+    found = run(officers.officers_for(RecordingTransport(payload), "Q9"))
+    by_name = {p["name"]: p for p in found}
+    assert set(by_name) == {"Dana Okonkwo", "Tomas Lindqvist"}
+    assert len(by_name["Dana Okonkwo"]["relationships"]) == 2
+
+
+def test_unlabelled_entities_are_dropped():
+    """WDQS returns the Q-number as the label when no English label exists."""
+    payload = {"results": {"bindings": [_binding("Q58024", "Q58024", "P169")]}}
+    assert run(officers.officers_for(RecordingTransport(payload), "Q9")) == []
+
+
+def test_a_refusing_service_returns_nothing_rather_than_raising():
+    assert run(officers.officers_for(RecordingTransport(None), "Q9")) == []
+
+
+def test_key_employees_caps_the_companies_queried():
+    transport = RecordingTransport({"results": {"bindings": []}})
+    qids = [f"Q{i}" for i in range(20)]
+    found, queried, answered = run(officers.key_employees(
+        transport, FakeReporter(), qids, {},
+    ))
+    assert queried == _v2config.OFFICER_COMPANY_CAP
+    assert len(transport.queries) == _v2config.OFFICER_COMPANY_CAP
+
+
+def test_key_employees_reports_when_nothing_answered():
+    """The caller needs to distinguish 'no officers' from 'source refused'."""
+    transport = RecordingTransport(None)
+    found, queried, answered = run(officers.key_employees(
+        transport, FakeReporter(), ["Q1", "Q2"], {},
+    ))
+    assert found == []
+    assert queried == 2
+    assert answered == 0
+
+
+def test_key_employees_shapes_rows_for_the_network():
+    payload = {"results": {"bindings": [_binding("Q1", "Dana Okonkwo", "P169")]}}
+    transport = RecordingTransport(payload)
+    found, _, answered = run(officers.key_employees(
+        transport, FakeReporter(), ["Q9"], {"Q9": "Northwind Trading Ltd"},
+    ))
+    assert answered == 1
+    row = found[0]
+    assert row["name"] == "Dana Okonkwo"
+    assert row["company"] == "Northwind Trading Ltd"
+    assert row["tie_type"] == "colleague"
+    assert "Northwind Trading Ltd" in row["tie"]
+
+
+def test_no_companies_means_no_queries():
+    transport = RecordingTransport({"results": {"bindings": []}})
+    assert run(officers.key_employees(
+        transport, FakeReporter(), [], {},
+    )) == ([], 0, 0)
+    assert transport.queries == []
+
+
+def test_every_officer_outcome_is_distinguishable():
+    """Three outcomes mean different things to a reader:
+    no registry match, a refusing service, and companies that genuinely name
+    no officers. Reporting only one of them left a network of one person
+    looking like a complete answer."""
+    # No companies at all.
+    assert run(officers.key_employees(
+        RecordingTransport(None), FakeReporter(), [], {},
+    )) == ([], 0, 0)
+
+    # Queried, service refused.
+    _, queried, answered = run(officers.key_employees(
+        RecordingTransport(None), FakeReporter(), ["Q1"], {},
+    ))
+    assert (queried, answered) == (1, 0)
+
+    # Queried, answered, but the company names nobody.
+    found, queried, answered = run(officers.key_employees(
+        RecordingTransport({"results": {"bindings": []}}),
+        FakeReporter(), ["Q1"], {},
+    ))
+    assert (found, queried) == ([], 1)

@@ -105,8 +105,25 @@ MAX_FULLTEXT_CONCURRENCY = _int("V2_MAX_FULLTEXT_CONCURRENCY", 12)
 MAX_ANALYST_CONCURRENCY = _int("V2_MAX_ANALYST_CONCURRENCY", 8)
 # Firecrawl scrapes in flight.
 MAX_FIRECRAWL_CONCURRENCY = _int("V2_MAX_FIRECRAWL_CONCURRENCY", 4)
-# SPARQL fan-out for network candidate generation.
-MAX_SPARQL_CONCURRENCY = _int("V2_MAX_SPARQL_CONCURRENCY", 2)
+# SPARQL fan-out for network candidate generation. Raised from 2: the Query
+# Service tolerates it, and at 2 a set of officer lookups that each time out
+# serialises into minutes of waiting.
+MAX_SPARQL_CONCURRENCY = _int("V2_MAX_SPARQL_CONCURRENCY", 4)
+
+# --- officer lookup (PS2 "key employees") ----------------------------------
+# A WDQS query that has not answered in this long will not answer in 75, which
+# is what V1 gives it. Failing fast is the difference between a network run of
+# under a minute and one of four.
+SPARQL_TIMEOUT = _float("V2_SPARQL_TIMEOUT", 25.0)
+
+# Repeating an unchanged heavy query just pays the cost again, so a timeout
+# gets one more chance rather than V1's three.
+SPARQL_ATTEMPTS = _int("V2_SPARQL_ATTEMPTS", 2)
+
+# Officer lookup has sharply diminishing returns past a subject's principal
+# entities, and each company is a full query.
+OFFICER_COMPANY_CAP = _int("V2_OFFICER_COMPANY_CAP", 5)
+OFFICERS_PER_COMPANY = _int("V2_OFFICERS_PER_COMPANY", 12)
 
 # Threads for V1's synchronous source modules, reached through bridge.SyncFacade.
 MAX_BRIDGE_THREADS = _int("V2_MAX_BRIDGE_THREADS", 16)

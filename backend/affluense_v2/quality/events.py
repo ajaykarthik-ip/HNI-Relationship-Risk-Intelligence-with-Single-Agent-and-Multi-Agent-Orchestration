@@ -177,8 +177,9 @@ async def build_findings(bridge, articles: list, entity: str, entity_role: str,
     # nothing would hide the mismatch -- but its matters must not become the
     # subject's, or a wrong input silently produces adverse findings about
     # someone with no connection to any of it.
-    if relationship_type == "uncorroborated_seed":
-        carries_exposure = False
+    # Corroboration is a separate axis from exposure, and both are required
+    # before an entity's matters can count toward the subject.
+    corroborated = attribution.is_corroborated(relationship_type)
 
     findings = []
     for group in group_events(_eligible(articles)):
@@ -206,7 +207,7 @@ async def build_findings(bridge, articles: list, entity: str, entity_role: str,
         ) or f"{category.replace('_', ' ').title()} matter reported at {entity}"
 
         attributed, reason = attribution.decide(
-            group, carries_exposure, subject_name,
+            group, carries_exposure, subject_name, corroborated,
         )
         if say and not attributed:
             say(f"    {entity}: not attributed to the subject — {reason}")

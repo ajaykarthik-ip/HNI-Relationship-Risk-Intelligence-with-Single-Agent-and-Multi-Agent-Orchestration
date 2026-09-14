@@ -165,9 +165,29 @@ def _apply_company_corroboration(run: Run, subject, merged: list,
     # Flagged, not dropped. The company is still screened -- hiding it would
     # hide the mismatch -- but nothing found there is attributed to a person
     # the evidence never tied to it.
+    # Matched on the relationship text as well as the source. `merge` picks one
+    # record of a group as primary and carries the others' `sources` into a
+    # list, so a scalar `source` can be lost -- while `relationships` is merged
+    # and survives. The report renders "supplied with the query" for exactly
+    # this record, which is the evidence that the relationship text is the
+    # durable signal.
+    seed_note = "supplied with the query"
+    flagged = 0
     for record in merged:
-        if record.get("source") == "Query input":
+        is_seed = (
+            record.get("source") == "Query input"
+            or "Query input" in (record.get("sources") or [])
+            or any(seed_note in str(r).lower()
+                   for r in (record.get("relationships") or []))
+        )
+        if is_seed:
             record["corroboration_failed"] = True
+            flagged += 1
+    if flagged:
+        run.reporter.say(
+            f"    {run.company} is screened but not attributed: nothing "
+            "corroborates the subject's link to it"
+        )
 
 
 def _annotate_local(run: Run, articles: list, record: dict | None) -> None:

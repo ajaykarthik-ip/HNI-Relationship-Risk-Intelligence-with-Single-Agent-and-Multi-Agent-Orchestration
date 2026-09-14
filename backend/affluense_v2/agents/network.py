@@ -34,6 +34,7 @@ from affluense.sources import wikidata
 
 from .. import config as v2config
 from ..concurrency import gather_ordered, map_bounded
+from ..network import officers as officer_lookup
 from ..network import peers as news_peers
 from ..quality import people as quality_people
 
@@ -116,56 +117,6 @@ async def _generate_pool(bridge, reporter, subject_qid: str, profile: dict,
     return list(pool.values())
 
 
-async def _key_employees(bridge, reporter, company_qids: list,
-                         company_names: dict) -> list:
-    """The officers each connected company names.
-
-    PS2 asks for "co-founders, colleagues, key employees in the company", and
-    nothing was answering the last of those. `wikidata.people_for` is the
-    mirror of `companies_for` and already exists -- the network pipeline simply
-    never called it, so a company's own board and executives never reached the
-    subject's network.
-
-    One query per company, concurrently. Depends on registry access: where the
-    Query Service is unreachable this returns nothing and the network falls
-    back to co-officers and page-extracted associates, as before.
-    """
-    if not company_qids:
-        return []
-
-    reporter.say("  Key employees at the connected companies ...")
-
-    async def one(qid: str):
-        return await bridge.run(wikidata.people_for, qid, 15)
-
-    results = await map_bounded(
-        company_qids, one, v2config.MAX_SPARQL_CONCURRENCY,
-        on_error=lambda i, e: bridge.facade.note(
-            f"Officer lookup failed for {company_qids[i]}: {e}"
-        ),
-    )
-
-    found = []
-    for qid, people in zip(company_qids, results):
-        company = company_names.get(qid) or qid
-        for person in people or []:
-            roles = person.get("relationships") or []
-            found.append({
-                "name": person["name"],
-                "wikidata_id": person.get("wikidata_id"),
-                "role": "; ".join(roles) or None,
-                "company": company,
-                "tie": (
-                    f"{roles[0]} at {company}" if roles
-                    else f"named as an officer of {company}"
-                ),
-                "tie_type": "colleague",
-                "source": person["source"],
-                "source_url": person["source_url"],
-            })
-    return found
-
-
 async def run(transport, bridge, reporter, subject, bio, found: dict,
               options, budgets) -> dict:
     """The same contract as `affluense.network.pipeline.run`."""
@@ -223,12 +174,39 @@ async def run(transport, bridge, reporter, subject, bio, found: dict,
         for c in companies
         if (c.get("registry_id") or c.get("wikidata_id"))
     }
-    employees = await _key_employees(bridge, reporter, company_qids,
-                                     company_names)
+    employees, queried, answered = await officer_lookup.key_employees(
+        transport, reporter, company_qids, company_names,
+    )
     known = {(p.get("name") or "").lower() for p in network}
     network.extend(
         person for person in employees
         if (person.get("name") or "").lower() not in known
+    )
+    # Three outcomes, and they mean different things. Reporting only the
+    # middle one left a network of one person looking like a complete answer.
+    if not company_qids:
+        transport.note(
+            f"None of the {len(companies)} connected company(ies) resolved to "
+            "a registry entity, so their officers could not be looked up. Key "
+            "employees are missing from the network below because the "
+            "companies are not in Wikidata, not because they have none."
+        )
+    elif queried and not answered:
+        transport.note(
+            f"Officer records for {queried} connected company(ies) could not "
+            "be retrieved: the Wikidata Query Service did not answer. Key "
+            "employees are missing from the network below, which is a gap in "
+            "the source rather than a finding about the subject."
+        )
+    elif answered and not employees:
+        transport.note(
+            f"{answered} connected company(ies) were checked and name no "
+            "officers in Wikidata, so the network below rests on co-officer "
+            "and page-extracted ties alone."
+        )
+    reporter.say(
+        f"  {len(employees)} key employee(s) from {answered} of "
+        f"{len(company_qids)} registry-matched company(ies)"
     )
 
     # Page extraction names organisations as readily as people, so "Temasek"

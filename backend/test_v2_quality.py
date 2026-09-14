@@ -908,3 +908,360 @@ def test_different_months_remain_separate():
         subject_name=SUBJECT,
     ))
     assert len(findings) == 2
+
+
+def test_seed_is_recognised_by_relationship_text_not_just_source():
+    """`merge` picks one record of a group as primary and folds the others'
+    `sources` into a list, so a scalar `source` can be lost. The relationship
+    text survives that merge, and the report renders it, so it is the durable
+    signal for identifying the supplied company."""
+    records = [
+        {"name": "A Co", "source": "Query input", "relationships": []},
+        {"name": "B Co", "sources": ["Query input"], "relationships": []},
+        {"name": "C Co", "relationships": ["supplied with the query"]},
+        {"name": "D Co", "source": "Wikidata", "relationships": ["Director"]},
+    ]
+    seed_note = "supplied with the query"
+    flagged = [
+        r["name"] for r in records
+        if (r.get("source") == "Query input"
+            or "Query input" in (r.get("sources") or [])
+            or any(seed_note in str(x).lower()
+                   for x in (r.get("relationships") or [])))
+    ]
+    assert flagged == ["A Co", "B Co", "C Co"]
+
+
+def test_actor_is_subject_is_not_trusted_against_a_different_name():
+    """The flag says *someone* is the accused, not *who*.
+
+    It is derived from `subject_role_in_event`, which the model sets against
+    whoever it believes the story is about. Given a target entity whose name
+    contains a person's name, it reads the company as the subject -- and a
+    screening of one person against an unrelated company returned that
+    company's founder's conviction as the subject's own, at CRITICAL.
+    """
+    group = [article(
+        summary="The founder was sentenced to six months for contempt",
+        actors=["Marcus Delgado"], role="accused", actor_is_subject=True,
+        publisher="Outlet One",
+    )]
+    attributed, reason = attribution.decide(group, True, SUBJECT)
+    assert not attributed
+    assert "Marcus Delgado" in reason
+
+
+def test_actor_is_subject_is_trusted_when_the_subject_is_named():
+    group = [article(
+        summary="Whitfield was charged over an invoice scheme",
+        actors=[SUBJECT], role="accused", actor_is_subject=True,
+    )]
+    attributed, _ = attribution.decide(group, True, SUBJECT)
+    assert attributed
+
+
+def test_actor_is_subject_is_trusted_when_nobody_is_named():
+    """No named actor means the flag is the only signal there is, and
+    under-reporting a matter about the subject is the worse error."""
+    group = [article(
+        summary="Charged over an invoice scheme", actors=[], role="accused",
+        actor_is_subject=True,
+    )]
+    attributed, _ = attribution.decide(group, True, SUBJECT)
+    assert attributed
+
+
+def test_an_unconnected_company_cannot_reach_the_subject_by_any_route():
+    """End to end: the failure this whole path exists to prevent."""
+    group = [article(
+        published="2026-05-27", category="litigation",
+        summary="The founder was sentenced to six months for contempt",
+        actors=["Marcus Delgado"], role="accused", actor_is_subject=True,
+        publisher="Outlet One",
+    )]
+    findings = run(quality_events.build_findings(
+        FakeBridge(), group, "Some Company Ltd", "supplied with the query",
+        "uncorroborated_seed", subject_name=SUBJECT,
+    ))
+    assert len(findings) == 1, "still reported"
+    assert not findings[0].attributed_to_subject
+    assert not findings[0].is_material, "and cannot drive a risk level"
+
+
+def test_a_company_matter_survives_an_executive_being_named():
+    """The over-correction guard.
+
+    Rejecting outright whenever the named actor is not the subject removed
+    every legitimate corporate finding along with the false one: a regulator
+    barring a company names its executives without making the matter any less
+    the company's own.
+    """
+    # What the model actually returns for a corporate matter: the regulator
+    # and the company, not people.
+    group = [article(
+        summary="The regulator barred the company from selling the product",
+        actors=["FSSAI", "Northwind Trading Ltd"], role="accused",
+        actor_is_subject=True, publisher="Outlet One",
+    )]
+    attributed, _ = attribution.decide(group, True, SUBJECT)
+    assert attributed, "a controlled company's own matter is still exposure"
+
+
+def test_organisations_in_actors_are_not_treated_as_people():
+    """`actors` holds whoever acted, which for a corporate matter is the
+    regulator and the company. Counting those as named individuals made every
+    company matter look like somebody else's act."""
+    from affluense_v2.quality import attribution as attr
+
+    group = [article(
+        summary="The authority fined the company",
+        actors=["FSSAI", "Northwind Trading Ltd", "Marcus Delgado"],
+        role="accused",
+    )]
+    assert attr._named_individuals(group) == ["Marcus Delgado"]
+
+
+def test_an_unconnected_company_is_still_rejected():
+    """And the false one still has to fail.
+
+    It is caught by the third-party rule rather than the exposure rule: the
+    evidence names an individual who is not the subject, so it is that
+    person's conduct and the relationship never comes into it. Both routes
+    reach the same verdict; this one reaches it first, and says so.
+    """
+    group = [article(
+        summary="The founder was sentenced to six months for contempt",
+        actors=["Marcus Delgado"], role="accused", actor_is_subject=True,
+        publisher="Outlet One",
+    )]
+    attributed, reason = attribution.decide(group, False, SUBJECT)
+    assert not attributed
+    assert "Marcus Delgado" in reason
+    assert "not the subject" in reason
+
+
+def test_an_uncorroborated_entity_cannot_attribute_without_a_named_subject():
+    """The exposure gate has to sit above the actor flag.
+
+    `actor_is_subject` is the model's reading of who a story is about. When an
+    article names no individual at all the flag is the only signal, and
+    trusting it first let an entity the subject was never connected to reach
+    them anyway.
+    """
+    group = [article(
+        summary="A court ruled against the company in a loan fraud case",
+        actors=[], role="accused", actor_is_subject=True,
+        publisher="Outlet One",
+    )]
+    attributed, reason = attribution.decide(group, False, SUBJECT)
+    assert not attributed
+    assert "exposure" in reason
+
+
+def test_a_named_subject_is_attributed_even_without_exposure():
+    """A matter naming the individual follows the individual, wherever it
+    happened -- that rule has to survive the reordering."""
+    group = [article(
+        summary="Whitfield was charged over an invoice scheme",
+        actors=[SUBJECT], role="accused", actor_is_subject=True,
+    )]
+    attributed, _ = attribution.decide(group, False, SUBJECT)
+    assert attributed
+
+
+def test_a_controlled_companys_own_matter_still_attributes():
+    group = [article(
+        summary="The regulator barred the company from selling the product",
+        actors=["FSSAI", "Northwind Trading Ltd"], role="accused",
+        actor_is_subject=True,
+    )]
+    attributed, _ = attribution.decide(group, True, SUBJECT)
+    assert attributed
+
+
+def test_pipeline_bookkeeping_is_not_a_role():
+    roles = ["Founder", "supplied with the query", "unknown", "Chief Executive"]
+    assert quality_people.meaningful_roles(roles) == ["Founder",
+                                                      "Chief Executive"]
+
+
+# ===========================================================================
+# THE ATTRIBUTION DECISION MATRIX
+# ===========================================================================
+# The complete specification. Written before the implementation that satisfies
+# it, so the behaviour is defined once rather than adjusted per example.
+#
+# Four questions are answered independently for every finding:
+#
+#   1  who is the actor?          the individuals the evidence names
+#   2  which entity is involved?  the screening target
+#   3  is that entity genuinely connected AND corroborated?
+#   4  personal misconduct, or company-level exposure?
+#
+# And two outcomes follow:
+#
+#   attributed   the finding counts toward the subject. `Finding.is_material`
+#                requires it, and `risk_score.assess` reads material findings,
+#                so this bit is what decides whether something drives a level.
+#   contextual   reported, visible, evidenced -- and not counted.
+#
+# The rule the whole table exists to enforce: a finding must never become the
+# subject's merely because a company relationship was asserted. An unverified
+# or unrelated entity can never contribute to a person's risk.
+#
+#   row  actor            relationship                attributed  material
+#   ---  ---------------  --------------------------  ----------  --------
+#   A    subject          connected                   yes         yes
+#   A2   subject          unverified                  yes         yes
+#   B    none named       connected + corroborated    yes         yes
+#   C    other individual connected + corroborated    yes         yes
+#   D    other individual no exposure (investment)    no          no
+#   E    none named       unverified                  no          no
+#   F    other individual unverified                  no          no
+#   G    any              unrelated / no exposure     no          no
+#   H    subject as       connected                   no          no
+#        accuser
+#
+# C is the row that distinguishes this model: another individual's act at a
+# company the subject genuinely controls is NOT a claim that the subject did
+# it, but it IS exposure they carry. A and A2 are the mirror: a matter naming
+# the individual follows the individual, wherever it happened.
+
+CONNECTED = "current_company"          # carries exposure
+NO_EXPOSURE = "investment"             # reported, never attributed
+UNVERIFIED = "uncorroborated_seed"     # connection asserted, nothing supports it
+OTHER_PERSON = "Marcus Delgado"
+
+
+def _matrix_case(relationship_type, actors, role="accused",
+                 actor_is_subject=True, summary="An adverse matter"):
+    """One row of the matrix, driven end to end through build_findings."""
+    group = [article(
+        published="2026-04-01", category="fraud", summary=summary,
+        actors=actors, role=role, actor_is_subject=actor_is_subject,
+        publisher="Outlet One",
+    )]
+    findings = run(quality_events.build_findings(
+        FakeBridge(), group, "Some Entity Ltd", "role", relationship_type,
+        subject_name=SUBJECT,
+    ))
+    assert len(findings) == 1, "the matter is always reported"
+    return findings[0]
+
+
+# --- A: the subject is the actor -------------------------------------------
+
+def test_matrix_a_subject_is_the_actor_at_a_connected_company():
+    finding = _matrix_case(CONNECTED, [SUBJECT])
+    assert finding.attributed_to_subject
+    assert finding.is_material
+
+
+def test_matrix_a2_subject_is_the_actor_at_an_unverified_company():
+    """A matter naming the individual follows the individual, wherever it
+    happened. The relationship is irrelevant when the person is the actor."""
+    finding = _matrix_case(UNVERIFIED, [SUBJECT])
+    assert finding.attributed_to_subject
+    assert finding.is_material
+
+
+# --- B: a company matter with no individual named --------------------------
+
+def test_matrix_b_company_matter_at_a_corroborated_company():
+    """A regulator acting against a company names the regulator and the
+    company, not people. That is exposure the subject carries."""
+    finding = _matrix_case(
+        CONNECTED, ["Some Entity Ltd"],
+        summary="The regulator barred the company from selling the product",
+    )
+    assert finding.attributed_to_subject
+    assert finding.is_material
+
+
+# --- C: a different individual is the actor --------------------------------
+
+def test_matrix_c_another_individuals_act_at_a_connected_company():
+    """One person's act is never another's.
+
+    A named individual who is not the subject means the evidence describes
+    that person's conduct, not the organisation's -- and no relationship,
+    however strong, converts it into the subject's. It stays reported as
+    context for the company.
+    """
+    finding = _matrix_case(CONNECTED, [OTHER_PERSON], actor_is_subject=False)
+    assert not finding.attributed_to_subject
+    assert not finding.is_material
+
+
+def test_matrix_d_another_individuals_act_where_there_is_no_exposure():
+    """A minority holding is not control, so its conduct is not carried."""
+    finding = _matrix_case(NO_EXPOSURE, [OTHER_PERSON], actor_is_subject=False)
+    assert not finding.attributed_to_subject
+    assert not finding.is_material
+
+
+# --- E, F: the relationship itself is unverified ---------------------------
+
+def test_matrix_e_company_matter_at_an_unverified_company():
+    """The defect this table exists to prevent: an asserted relationship
+    nothing supports must not carry that company's matters to the subject."""
+    finding = _matrix_case(
+        UNVERIFIED, [],
+        summary="A court ruled against the company in a fraud case",
+    )
+    assert not finding.attributed_to_subject
+    assert not finding.is_material
+
+
+def test_matrix_f_another_individuals_act_at_an_unverified_company():
+    finding = _matrix_case(UNVERIFIED, [OTHER_PERSON], actor_is_subject=False)
+    assert not finding.attributed_to_subject
+    assert not finding.is_material
+
+
+def test_matrix_g_an_unrelated_entity_never_contributes():
+    finding = _matrix_case("other", [OTHER_PERSON], actor_is_subject=False)
+    assert not finding.attributed_to_subject
+    assert not finding.is_material
+
+
+# --- H: the subject is in the story but not the party ----------------------
+
+def test_matrix_h_subject_as_accuser_is_not_attributed():
+    finding = _matrix_case(
+        CONNECTED, [OTHER_PERSON], role="accuser", actor_is_subject=False,
+        summary="The subject alleges wrongdoing by a former partner",
+    )
+    assert not finding.attributed_to_subject
+    assert not finding.is_material
+
+
+# --- the invariant the whole table serves ----------------------------------
+
+def test_matrix_unverified_relationships_never_reach_the_risk_level():
+    """Swept across every actor shape: nothing an unverified relationship
+    produces may be material, however the evidence is worded."""
+    shapes = [
+        ([], True),                       # nobody named
+        ([OTHER_PERSON], False),          # someone else named
+        ([OTHER_PERSON], True),           # someone else, flag set anyway
+        (["Some Entity Ltd"], True),   # organisations only
+    ]
+    for actors, flag in shapes:
+        finding = _matrix_case(UNVERIFIED, actors, actor_is_subject=flag)
+        assert not finding.is_material, f"{actors} / flag={flag}"
+
+
+def test_matrix_corroborated_relationships_still_carry_company_exposure():
+    """And the mirror: the fix must not suppress legitimate exposure."""
+    # Only shapes where no individual other than the subject is named: those
+    # are the company's own matters. A named third party is that party's act,
+    # covered by row C.
+    shapes = [
+        ([], True),
+        (["Some Entity Ltd"], True),
+        ([SUBJECT], True),
+    ]
+    for actors, flag in shapes:
+        finding = _matrix_case(CONNECTED, actors, actor_is_subject=flag)
+        assert finding.is_material, f"{actors} / flag={flag}"

@@ -89,6 +89,15 @@ WEAK_ROLE = re.compile(
     re.IGNORECASE,
 )
 
+# Bookkeeping the pipeline writes into a relationship list, not a job. It
+# reached the subject's role profile once discovery returned nothing else, and
+# a profile role is matched against every candidate.
+NOT_A_ROLE = re.compile(
+    r"\b(supplied with the query|query input|seed|provided in the request|"
+    r"unknown|unspecified|not specified|n/?a)\b",
+    re.IGNORECASE,
+)
+
 # Roles that carry a real financial or executive interest. Present alongside a
 # media word, the substance wins -- "Shareholder / Ambassador" is a holding.
 SUBSTANTIVE_ROLE = re.compile(
@@ -144,7 +153,7 @@ def meaningful_roles(roles) -> list:
     for role in roles or []:
         if not isinstance(role, str) or not role.strip():
             continue
-        if WEAK_ROLE.match(role):
+        if WEAK_ROLE.match(role) or NOT_A_ROLE.search(role):
             continue
         kept.append(role)
     return kept

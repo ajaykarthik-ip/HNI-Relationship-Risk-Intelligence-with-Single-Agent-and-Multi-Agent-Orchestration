@@ -711,3 +711,111 @@ def test_no_findings_means_no_finding_based_penalty():
     report = _report([], coverage={"after_dedup": 100, "fulltext_fetched": 50})
     confidence.cap(report)
     assert report["assessment"]["confidence"] == "HIGH"
+
+
+# ---------------------------------------------------------------------------
+# Name and role quality
+# ---------------------------------------------------------------------------
+
+from affluense_v2.quality import people as quality_people  # noqa: E402
+
+
+def test_a_job_title_in_the_name_means_no_individual_was_named():
+    """Headlines that never name the person arrive as a position instead."""
+    for name in ("Zepto CEO", "Mamaearth CEO", "Acme Founder",
+                 "Northwind Chairman"):
+        assert not quality_people.looks_like_person(name), name
+
+
+def test_real_names_survive_the_title_check():
+    for name in ("Dana Okonkwo", "Mary Alice Stephenson", "Tomas Lindqvist"):
+        assert quality_people.looks_like_person(name), name
+
+
+def test_a_masthead_of_common_nouns_is_not_a_person():
+    """Two capitalised tokens, no legal form -- neither the form check nor the
+    word count catches it, but every token is a common noun."""
+    for name in ("Business Standard", "Daily Mirror", "National Herald",
+                 "Global Capital"):
+        assert not quality_people.looks_like_person(name), name
+
+
+def test_weak_roles_are_dropped_from_the_subject_profile():
+    roles = ["Founder", "Consultant", "Chief Executive", "Mentor", "Member"]
+    kept = quality_people.meaningful_roles(roles)
+    assert kept == ["Founder", "Chief Executive"]
+
+
+def test_meaningful_roles_is_safe_on_junk():
+    assert quality_people.meaningful_roles(None) == []
+    assert quality_people.meaningful_roles(["", "   ", None]) == []
+
+
+def test_a_qualified_consultant_title_is_kept():
+    """Only the bare generic word is dropped; a real title survives."""
+    assert quality_people.meaningful_roles(["Chief Consultant"]) == \
+        ["Chief Consultant"]
+
+
+# ---------------------------------------------------------------------------
+# Clustering: distance alone cannot separate events, wording can
+# ---------------------------------------------------------------------------
+
+def test_one_matter_followed_over_months_is_one_finding():
+    group = [
+        article(published="2026-03-02", category="fraud",
+                summary="Agency opened a bank fraud case over the branch deposits",
+                role="accused", publisher="Outlet One"),
+        article(published="2026-07-14", category="fraud",
+                summary="Bank fraud case over the branch deposits continues",
+                role="accused", publisher="Outlet Two"),
+    ]
+    assert len(quality_events.group_events(group)) == 1
+
+
+def test_two_demands_for_different_amounts_stay_separate():
+    """The generic risk of widening the window: distinct matters of the same
+    kind at one company, months apart, must not collapse into one."""
+    group = [
+        article(published="2026-02-05", category="regulatory",
+                summary="Company faces a 46 crore goods and services tax demand",
+                role="accused", publisher="Outlet One"),
+        article(published="2026-04-03", category="regulatory",
+                summary="Income tax department issues a 110 crore demand notice",
+                role="accused", publisher="Outlet Two"),
+    ]
+    assert len(quality_events.group_events(group)) == 2
+
+
+# ---------------------------------------------------------------------------
+# An uncorroborated seed company is reported but never attributed
+# ---------------------------------------------------------------------------
+
+def test_uncorroborated_seed_company_is_not_the_subjects_exposure():
+    """Pairing a person with a company nothing connects them to must not
+    produce adverse findings about that person."""
+    group = [article(
+        published="2026-05-01", category="fraud",
+        summary="A founder was convicted over a funds transfer",
+        actors=[], role=None, actor_is_subject=False, publisher="Outlet One",
+    )]
+    findings = run(quality_events.build_findings(
+        FakeBridge(), group, "Some Company Ltd", "supplied with the query",
+        "uncorroborated_seed", subject_name=SUBJECT,
+    ))
+    assert len(findings) == 1, "the matter is still reported"
+    assert not findings[0].attributed_to_subject
+    assert not findings[0].is_material
+
+
+def test_a_corroborated_company_still_attributes():
+    group = [article(
+        published="2026-05-01", category="fraud",
+        summary="The company was penalised by the regulator",
+        actors=[], role=None, actor_is_subject=False, publisher="Outlet One",
+    )]
+    findings = run(quality_events.build_findings(
+        FakeBridge(), group, "Some Company Ltd", "Director", "current_company",
+        subject_name=SUBJECT,
+    ))
+    assert findings[0].attributed_to_subject

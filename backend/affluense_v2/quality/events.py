@@ -44,6 +44,14 @@ from .text import containment, days_apart, iso, similarity
 # Same category, this close together: the same matter being followed.
 SAME_CATEGORY_DAYS = 45
 
+# Beyond that window, same-category reports still merge -- but only when the
+# text agrees they are about the same thing. A long-running enforcement matter
+# is reported for months, while two tax demands for different amounts at the
+# same company months apart are genuinely different events. Distance alone
+# cannot tell them apart; the wording can.
+SAME_CATEGORY_EXTENDED_DAYS = 200
+EXTENDED_JACCARD = 0.35
+
 # Different categories need a stronger textual match, and get a wider window,
 # because a settlement and the charge it settles are months apart and get
 # described in different words.
@@ -87,6 +95,14 @@ def _same_event(cluster: list, article) -> bool:
         # side of a year boundary.
         if same_category and (gap is None or gap <= SAME_CATEGORY_DAYS):
             return True
+
+        # Further apart, and of the same kind: one ongoing matter followed over
+        # months, or two separate ones. The summaries decide.
+        if (same_category and gap is not None
+                and gap <= SAME_CATEGORY_EXTENDED_DAYS):
+            if (similarity(summary, member_summary) >= EXTENDED_JACCARD
+                    or containment(summary, member_summary) >= SIMILAR_CONTAINMENT):
+                return True
 
         # Different words for the same event. Needs a real textual match.
         if gap is not None and gap <= CROSS_CATEGORY_DAYS:
@@ -155,6 +171,14 @@ async def build_findings(bridge, articles: list, entity: str, entity_role: str,
         # A matter that names the individual is theirs wherever it happened.
         or relationship_type == "person"
     )
+    # The company supplied with the query is added to the screening set by
+    # definition, but when nothing corroborates the link the user may simply
+    # have paired the wrong two names. Screening it is still right -- saying
+    # nothing would hide the mismatch -- but its matters must not become the
+    # subject's, or a wrong input silently produces adverse findings about
+    # someone with no connection to any of it.
+    if relationship_type == "uncorroborated_seed":
+        carries_exposure = False
 
     findings = []
     for group in group_events(_eligible(articles)):

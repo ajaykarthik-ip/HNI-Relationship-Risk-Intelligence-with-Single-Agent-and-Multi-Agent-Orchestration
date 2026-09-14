@@ -190,7 +190,15 @@ export function RunStatus({
               }`}
             >
               {stage.stage}
-              {stage.total > 0 ? ` ${stage.done}/${stage.total}` : ""}
+              {/* A finished stage with no countable work -- "starting", or a
+                  stage that was skipped -- reads "0/1" if the fraction is
+                  printed regardless. Show the count only while it means
+                  something. */}
+              {stage.complete
+                ? ""
+                : stage.total > 0
+                  ? ` ${stage.done}/${stage.total}`
+                  : ""}
             </span>
           ))}
         </div>

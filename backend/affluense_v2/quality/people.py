@@ -40,6 +40,40 @@ ORG_SHAPED_TIE = re.compile(
     re.IGNORECASE,
 )
 
+# Job-title words. A name containing one is a description of a position, not a
+# person: headlines that never named the individual arrive as "Zepto CEO" or
+# "Mamaearth CEO", and those were being ranked as people to meet.
+TITLE_TOKEN = re.compile(
+    r"\b(ceo|cto|cfo|coo|cmo|cio|chro|md|vp|svp|evp|chief|founder|"
+    r"co-?founder|director|chairman|chairperson|chair|president|head|"
+    r"partner|promoter|owner|proprietor|executive|officer|manager|"
+    r"spokesperson|boss|chief executive)\b",
+    re.IGNORECASE,
+)
+
+# Words that make up organisation names rather than personal ones. A masthead
+# like "Business Standard" is two capitalised tokens with no legal form, so
+# neither the form check nor the word count catches it -- but every token is a
+# common noun, which a personal name's tokens are not.
+GENERIC_NAME_WORD = frozenset("""
+business standard times news post journal express mirror herald tribune
+daily weekly monthly review report reports today live network channel
+media digital online global national international world group capital
+partners ventures holdings ventures fund funds trust bank bureau desk
+india indian asia asian america american europe european africa global
+the of and for with
+""".split())
+
+# Roles too generic to establish a peer relationship. "Consultant" appearing in
+# the subject's own profile gave every consultant in the pool a perfect role
+# match, which is 30% of the relevance score.
+WEAK_ROLE = re.compile(
+    r"^\s*(consultant|advisor|adviser|mentor|member|associate|contributor|"
+    r"speaker|panellist|panelist|guest|expert|analyst|observer|"
+    r"independent consultant|freelance\w*)\s*$",
+    re.IGNORECASE,
+)
+
 # Roles that carry a real financial or executive interest. Present alongside a
 # media word, the substance wins -- "Shareholder / Ambassador" is a holding.
 SUBSTANTIVE_ROLE = re.compile(
@@ -69,7 +103,31 @@ def looks_like_person(name: str | None) -> bool:
         return False
     if len(words) > 6:
         return False
+    # A job title in the name means the headline never named the individual.
+    if TITLE_TOKEN.search(raw):
+        return False
+    # Every token a common noun: a masthead or an organisation, not a person.
+    lowered = [w.strip(".,").lower() for w in words]
+    if lowered and all(word in GENERIC_NAME_WORD for word in lowered):
+        return False
     return True
+
+
+def meaningful_roles(roles) -> list:
+    """Drop roles too generic to establish similarity between two people.
+
+    Applied to the *subject's* profile before scoring. "Consultant" arriving
+    from page extraction gave every consultant in the candidate pool a perfect
+    role match to someone who does not meaningfully hold that role.
+    """
+    kept = []
+    for role in roles or []:
+        if not isinstance(role, str) or not role.strip():
+            continue
+        if WEAK_ROLE.match(role):
+            continue
+        kept.append(role)
+    return kept
 
 
 def is_organisation_tie(relationship: str | None) -> bool:

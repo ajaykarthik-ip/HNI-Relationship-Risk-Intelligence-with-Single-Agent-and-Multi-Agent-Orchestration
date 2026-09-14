@@ -182,6 +182,10 @@ async def run(transport, bridge, reporter, subject, bio, found: dict,
     firecrawl_block = found.get("firecrawl", {})
 
     profile = discover.subject_profile(companies)
+    # "Consultant" arriving from page extraction gave every consultant in the
+    # candidate pool a perfect role match -- 30% of the relevance score -- to a
+    # role the subject does not meaningfully hold.
+    profile["roles"] = quality_people.meaningful_roles(profile.get("roles"))
     company_qids = [c["wikidata_id"] for c in companies if c.get("wikidata_id")]
 
     # Independent of each other: one asks what the companies do, the other who

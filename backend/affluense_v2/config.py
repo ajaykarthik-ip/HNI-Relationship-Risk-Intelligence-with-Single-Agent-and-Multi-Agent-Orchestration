@@ -53,12 +53,21 @@ def _float(name: str, default: float) -> float:
 # placeholder, but a polite contact is what the policy is really asking for.
 CONTACT = os.getenv("AFFLUENSE_CONTACT", "").strip()
 
+# The policy accepts a URL as a contact point, so the project's own repository
+# is a real and reachable default -- unlike a placeholder, which is what gets
+# a request refused. An address set in .env is still better, because it reaches
+# a person rather than an issue tracker.
+PROJECT_URL = os.getenv(
+    "AFFLUENSE_PROJECT_URL",
+    "https://github.com/ajaykarthik-ip/"
+    "HNI-Relationship-Risk-Intelligence-with-Single-Agent-and-Multi-Agent-"
+    "Orchestration",
+)
+
 USER_AGENT = (
-    f"affluense-screening/2.0 (due-diligence research; contact: {CONTACT}) "
-    "python-httpx"
+    f"affluense-screening/2.0 ({PROJECT_URL}; contact: {CONTACT}) python-httpx"
     if CONTACT else
-    "affluense-screening/2.0 (due-diligence research; set AFFLUENSE_CONTACT "
-    "to reach the operator) python-httpx"
+    f"affluense-screening/2.0 (+{PROJECT_URL}) python-httpx"
 )
 
 # Hosts that enforce the policy above, so a 403 from one of them can say what

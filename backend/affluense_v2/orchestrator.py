@@ -162,6 +162,12 @@ def _apply_company_corroboration(run: Run, subject, merged: list,
         f"'{run.company}' was not found among {resolved}'s connected "
         "companies; identity confidence reduced."
     )
+    # Flagged, not dropped. The company is still screened -- hiding it would
+    # hide the mismatch -- but nothing found there is attributed to a person
+    # the evidence never tied to it.
+    for record in merged:
+        if record.get("source") == "Query input":
+            record["corroboration_failed"] = True
 
 
 def _annotate_local(run: Run, articles: list, record: dict | None) -> None:
@@ -312,6 +318,13 @@ async def _screen(run: Run) -> dict:
             name, record.get("relationships", []),
             record.get("status", "active"), _stake_of(record),
         )
+        if record.get("corroboration_failed"):
+            relationship_class = "uncorroborated_seed"
+            basis = (
+                f"'{name}' was supplied with the query but nothing else "
+                "connects the subject to it. Screened and reported; not "
+                "treated as the subject's own exposure."
+            )
         record["relationship_class"] = relationship_class
         record["relationship_basis"] = basis
     await run.bridge.run(

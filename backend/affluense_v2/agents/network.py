@@ -30,10 +30,12 @@ from __future__ import annotations
 from affluense.models import utc_now
 from affluense.network import discover, explain, scoring
 from affluense.resolve import company as company_resolve
+from affluense.sources import wikidata
 
 from .. import config as v2config
 from ..concurrency import gather_ordered, map_bounded
 from ..network import peers as news_peers
+from ..quality import people as quality_people
 
 
 def no_entity_result(subject, transport) -> dict:
@@ -114,6 +116,56 @@ async def _generate_pool(bridge, reporter, subject_qid: str, profile: dict,
     return list(pool.values())
 
 
+async def _key_employees(bridge, reporter, company_qids: list,
+                         company_names: dict) -> list:
+    """The officers each connected company names.
+
+    PS2 asks for "co-founders, colleagues, key employees in the company", and
+    nothing was answering the last of those. `wikidata.people_for` is the
+    mirror of `companies_for` and already exists -- the network pipeline simply
+    never called it, so a company's own board and executives never reached the
+    subject's network.
+
+    One query per company, concurrently. Depends on registry access: where the
+    Query Service is unreachable this returns nothing and the network falls
+    back to co-officers and page-extracted associates, as before.
+    """
+    if not company_qids:
+        return []
+
+    reporter.say("  Key employees at the connected companies ...")
+
+    async def one(qid: str):
+        return await bridge.run(wikidata.people_for, qid, 15)
+
+    results = await map_bounded(
+        company_qids, one, v2config.MAX_SPARQL_CONCURRENCY,
+        on_error=lambda i, e: bridge.facade.note(
+            f"Officer lookup failed for {company_qids[i]}: {e}"
+        ),
+    )
+
+    found = []
+    for qid, people in zip(company_qids, results):
+        company = company_names.get(qid) or qid
+        for person in people or []:
+            roles = person.get("relationships") or []
+            found.append({
+                "name": person["name"],
+                "wikidata_id": person.get("wikidata_id"),
+                "role": "; ".join(roles) or None,
+                "company": company,
+                "tie": (
+                    f"{roles[0]} at {company}" if roles
+                    else f"named as an officer of {company}"
+                ),
+                "tie_type": "colleague",
+                "source": person["source"],
+                "source_url": person["source_url"],
+            })
+    return found
+
+
 async def run(transport, bridge, reporter, subject, bio, found: dict,
               options, budgets) -> dict:
     """The same contract as `affluense.network.pipeline.run`."""
@@ -148,7 +200,26 @@ async def run(transport, bridge, reporter, subject, bio, found: dict,
         ),
     )
     qids, labels, _resolved_count = industry_result or ([], {}, 0)
-    network = network or []
+    network = list(network or [])
+
+    # PS2 asks for key employees in the company, which nothing was answering.
+    company_names = {
+        c["wikidata_id"]: (c.get("canonical_name") or c.get("name"))
+        for c in companies if c.get("wikidata_id")
+    }
+    employees = await _key_employees(bridge, reporter, company_qids,
+                                     company_names)
+    known = {(p.get("name") or "").lower() for p in network}
+    network.extend(
+        person for person in employees
+        if (person.get("name") or "").lower() not in known
+    )
+
+    # Page extraction names organisations as readily as people, so "Temasek"
+    # and "Asia Society" arrived as members of the subject's personal network.
+    network, network_orgs = quality_people.clean_network(
+        network, say=reporter.say,
+    )
     reporter.advance("network")
 
     sectors_named: list = []
@@ -270,6 +341,14 @@ async def run(transport, bridge, reporter, subject, bio, found: dict,
                 )
     reporter.advance("network")
 
+    # An endorser is in an industry's coverage without being in the industry,
+    # and a colleague at the subject's own company is not a connection to make.
+    # Both were being suggested.
+    pool, dropped = quality_people.filter_candidates(
+        pool, profile.get("company_names") or [],
+        subject_name=resolved, say=reporter.say,
+    )
+
     reporter.say(f"  {len(pool)} candidates found; scoring ...")
     suggestions = scoring.rank(pool, profile, network,
                                limit=options.max_suggestions)
@@ -300,7 +379,11 @@ async def run(transport, bridge, reporter, subject, bio, found: dict,
         "candidate_sources": {
             "registry": registry_pool,
             "news": max(0, len(pool) - registry_pool),
+            "filtered_out": len(dropped),
         },
+        # Organisations that arrived as network members. Reported rather than
+        # discarded: the affiliation is real, it is just not a person.
+        "network_affiliations": network_orgs,
         "companies": companies,
         "suggestions": suggestions,
         "firecrawl": firecrawl_block,

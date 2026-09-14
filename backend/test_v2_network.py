@@ -221,3 +221,178 @@ def test_people_already_in_the_network_are_not_suggested():
                  "sitelinks": 0, "source": "News coverage", "source_url": "x"}
     network = [{"name": "Dana Okonkwo", "company": None}]
     assert scoring.rank([candidate], profile, network, limit=10) == []
+
+
+# ---------------------------------------------------------------------------
+# Person vs organisation, and candidate filtering
+# ---------------------------------------------------------------------------
+
+from affluense_v2.quality import people as quality_people  # noqa: E402
+
+
+def test_single_word_names_are_not_people():
+    """A one-word name is a brand far more often than an individual, and a
+    suggestion needs a full name to be actionable anyway."""
+    assert not quality_people.looks_like_person("Meridian")
+    assert not quality_people.looks_like_person("Brightpath")
+    assert quality_people.looks_like_person("Dana Okonkwo")
+
+
+def test_organisational_forms_are_not_people():
+    for name in ("Fairhaven Institute", "Brightpath Foundation",
+                 "Northwind Trading Ltd", "National Widget Association"):
+        assert not quality_people.looks_like_person(name), name
+
+
+def test_blank_and_overlong_names_are_rejected():
+    assert not quality_people.looks_like_person("")
+    assert not quality_people.looks_like_person(None)
+    assert not quality_people.looks_like_person("a b c d e f g h")
+
+
+def test_a_tie_describing_the_subjects_own_role_means_an_organisation():
+    """You are not the founder of a person. The shape of the tie says which
+    end of it is a company."""
+    assert quality_people.is_organisation_tie("founder")
+    assert quality_people.is_organisation_tie("board member")
+    assert quality_people.is_organisation_tie("subsidiary")
+    assert quality_people.is_organisation_tie("chairman")
+
+
+def test_a_peer_tie_is_not_an_organisation_tie():
+    assert not quality_people.is_organisation_tie("co-founder")
+    assert not quality_people.is_organisation_tie("Husband")
+    assert not quality_people.is_organisation_tie("colleague")
+    assert not quality_people.is_organisation_tie(None)
+
+
+def test_clean_network_separates_organisations_from_people():
+    network = [
+        {"name": "Sanjay Nayar", "tie": "Husband", "tie_type": "personal"},
+        {"name": "Meridian", "tie": "subsidiary", "tie_type": "associate"},
+        {"name": "Fairhaven Institute", "tie": "founder",
+         "tie_type": "associate"},
+        {"name": "Dana Okonkwo", "tie": "co-founder", "tie_type": "associate"},
+    ]
+    people, organisations = quality_people.clean_network(network)
+    assert [p["name"] for p in people] == ["Sanjay Nayar", "Dana Okonkwo"]
+    assert len(organisations) == 2
+
+
+def test_registry_cooficers_are_trusted_outright():
+    """The SPARQL filters on P31=Q5, so these are people by construction even
+    when the name shape is unusual."""
+    network = [{"name": "Prince", "tie": "co-officer", "tie_type": "co-officer",
+                "wikidata_id": "Q123"}]
+    people, organisations = quality_people.clean_network(network)
+    assert len(people) == 1
+    assert organisations == []
+
+
+def test_endorsement_roles_are_not_business_peers():
+    assert quality_people.is_media_role(["Brand Ambassador"])
+    assert quality_people.is_media_role(["brand ambassador", "endorser"])
+    assert not quality_people.is_media_role(["Chief Executive"])
+    assert not quality_people.is_media_role([])
+
+
+def test_a_substantive_role_outranks_an_endorsement_word():
+    """'Shareholder / Ambassador' carries a real financial interest."""
+    assert not quality_people.is_media_role(["Shareholder and Ambassador"])
+    assert not quality_people.is_media_role(["Founder", "Brand Ambassador"])
+
+
+def test_colleagues_at_the_subjects_own_company_are_excluded():
+    """A colleague is not a connection to make — they already work together."""
+    candidate = {"name": "Dana Okonkwo", "companies": ["Northwind Trading"]}
+    assert quality_people.works_with_subject(candidate, ["Northwind Trading"])
+    assert quality_people.works_with_subject(
+        candidate, ["Northwind Trading Ltd"]
+    ), "a longer filed name must still match"
+
+
+def test_unrelated_companies_do_not_count_as_shared():
+    candidate = {"name": "Dana Okonkwo", "companies": ["Helios Systems"]}
+    assert not quality_people.works_with_subject(candidate, ["Northwind Trading"])
+    assert not quality_people.works_with_subject(candidate, [])
+
+
+def test_filter_candidates_applies_all_three_rules():
+    candidates = [
+        {"name": "Dana Okonkwo", "roles": ["Chief Executive"],
+         "companies": ["Helios Systems Pvt Ltd"]},
+        {"name": "Meridian", "roles": ["Founder"], "companies": []},
+        {"name": "Priya Raghunathan", "roles": ["Brand Ambassador"],
+         "companies": ["Some Brand"]},
+        {"name": "Tomas Lindqvist", "roles": ["Director"],
+         "companies": ["Northwind Trading Ltd"]},
+    ]
+    kept, dropped = quality_people.filter_candidates(
+        candidates, ["Northwind Trading"],
+    )
+    assert [c["name"] for c in kept] == ["Dana Okonkwo"]
+    reasons = {d["name"]: d["reason"] for d in dropped}
+    assert "not a personal name" in reasons["Meridian"]
+    assert "endorsement" in reasons["Priya Raghunathan"]
+    assert "already works" in reasons["Tomas Lindqvist"]
+
+
+def test_filter_is_safe_on_empty_input():
+    assert quality_people.filter_candidates([], []) == ([], [])
+
+
+# ---------------------------------------------------------------------------
+# Industry must describe the candidate, not the query that found them
+# ---------------------------------------------------------------------------
+
+def test_industry_is_only_claimed_when_the_model_confirms_it():
+    """The generic failure: a candidate inherits the industry of the search
+    that surfaced them, which is 30% of the relevance score."""
+    spec = {"industry_id": "sector:cosmetics", "industry_label": "cosmetics",
+            "role": "CEO"}
+
+    class Article:
+        headline = "Bank appoints a new chief executive"
+        publisher = "Outlet"
+        publisher_name = "Outlet"
+        url = "https://example.test/a"
+
+    class Client:
+        configured = True
+
+        async def complete_json(self, system, user, max_tokens=0):
+            return {"people": [
+                {"name": "Kalyan Kumar", "company": "Central Bank",
+                 "role": "CEO", "in_industry": False, "headline_id": 0},
+                {"name": "Dana Okonkwo", "company": "Glow Cosmetics Ltd",
+                 "role": "CEO", "in_industry": True, "headline_id": 0},
+            ]}
+
+    found = run(peers._read_batch(Client(), [Article()], 0, spec, None))
+    by_name = {c["name"]: c for c in found}
+    assert by_name["Kalyan Kumar"]["matched_industries"] == []
+    assert by_name["Dana Okonkwo"]["matched_industries"] == ["sector:cosmetics"]
+
+
+def test_an_unconfirmed_candidate_scores_no_industry_overlap():
+    profile = {
+        "roles": ["Founder"], "industry_qids": ["sector:cosmetics"],
+        "industry_labels": {"sector:cosmetics": "cosmetics"},
+        "industries": ["cosmetics"], "countries": [], "company_names": [],
+    }
+    unconfirmed = {"name": "Kalyan Kumar", "roles": ["CEO"],
+                   "companies": ["Central Bank"], "matched_industries": [],
+                   "country": None, "sitelinks": 0, "source": "News coverage",
+                   "source_url": "x"}
+    ranked = scoring.rank([unconfirmed], profile, network=[], limit=5)
+    assert ranked[0]["score_components"]["industry_overlap"] == 0.0
+
+
+def test_merge_keeps_a_confirmation_from_any_query():
+    pool = {}
+    peers._merge(pool, {"name": "Dana Okonkwo", "roles": [], "companies": [],
+                        "matched_industries": [], "industry_confirmed": False})
+    peers._merge(pool, {"name": "Dana Okonkwo", "roles": [], "companies": [],
+                        "matched_industries": ["sector:cosmetics"],
+                        "industry_confirmed": True})
+    assert next(iter(pool.values()))["industry_confirmed"] is True

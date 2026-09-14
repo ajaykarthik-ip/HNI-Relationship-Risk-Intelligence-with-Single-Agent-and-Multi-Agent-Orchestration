@@ -373,7 +373,19 @@ export interface Suggestion {
 
 export interface NetworkReport {
   /** Where the candidate pool came from. V2 only; V1 omits it. */
-  candidate_sources?: { registry: number; news: number };
+  candidate_sources?: { registry: number; news: number; filtered_out?: number };
+  /**
+   * Organisations that arrived as network members.
+   *
+   * Page extraction names companies as readily as people, so these are moved
+   * out of the personal network rather than discarded — the affiliation is
+   * real, it just isn't someone to meet.
+   */
+  network_affiliations?: {
+    name: string;
+    tie: string | null;
+    source_url: string | null;
+  }[];
   query: { individual: string; company: string | null; collected_at: string };
   subject: Subject;
   profile: { roles: string[]; industries: string[]; countries: string[]; companies: string[] };

@@ -78,10 +78,18 @@ SYSTEM = (
     "with. Omit it if the headline does not state one.\n"
     "- role must be the job title the headline states. Omit it if absent. "
     "Never infer a title from the company.\n"
+    "- in_industry: does the COMPANY actually operate in the industry named in "
+    "`industry`? Judge the company, not the search that found it. A bank "
+    "executive appearing in a search about cosmetics retail is NOT in that "
+    "industry. Set false whenever the company's line of business is different, "
+    "and false when you cannot tell.\n"
     "- Skip journalists, analysts and commentators quoted about someone else.\n"
+    "- Skip brand ambassadors, endorsers and celebrities appearing in "
+    "marketing coverage. They are in the industry's news without being in the "
+    "industry.\n"
     "- Skip anyone who is the subject named in `exclude`.\n\n"
     'Reply as JSON: {"people": [{"name": str, "company": str|null, '
-    '"role": str|null, "headline_id": int}]}'
+    '"role": str|null, "in_industry": bool, "headline_id": int}]}'
 )
 
 
@@ -186,12 +194,20 @@ async def _read_batch(client, batch: list, offset: int, spec: dict,
             continue
         company = (row.get("company") or "").strip() or None
         role = (row.get("role") or "").strip() or None
+
+        # The industry the *search* used is not the industry the *person* is
+        # in. Attributing it unconditionally credited a housing-finance
+        # executive with cosmetics retail, purely because he turned up in that
+        # query -- and industry_overlap is 30% of the relevance score, so it
+        # promoted people with nothing in common with the subject.
+        in_industry = bool(row.get("in_industry"))
         found.append({
             "name": name,
             "wikidata_id": None,
             "roles": [role] if role else [],
             "companies": [company] if company else [],
-            "matched_industries": [spec["industry_id"]],
+            "matched_industries": [spec["industry_id"]] if in_industry else [],
+            "industry_confirmed": in_industry,
             "country": None,
             # No registry presence to measure, so prominence contributes
             # nothing. That is correct: it is a proxy for documentation, and
@@ -217,6 +233,10 @@ def _merge(pool: dict, candidate: dict) -> None:
         for value in candidate.get(field, []):
             if value and value not in existing[field]:
                 existing[field].append(value)
+    # Confirmed in any industry is confirmed: one query judging them out of
+    # scope should not erase another that judged them in it.
+    if candidate.get("industry_confirmed"):
+        existing["industry_confirmed"] = True
 
 
 async def discover(transport, reporter, budget, profile: dict,

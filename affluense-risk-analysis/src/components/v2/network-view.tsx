@@ -56,6 +56,31 @@ export function NetworkView({ report }: { report: NetworkReport }) {
         <Stat value={report.profile.companies.length} label="Companies" />
       </div>
 
+      {report.network_affiliations && report.network_affiliations.length > 0 && (
+        <section className="rounded-xl border border-hairline bg-surface p-5">
+          <h3 className="text-[14px] font-bold tracking-tight text-title">
+            Organisations, not people
+          </h3>
+          <p className="mt-1 text-[12px] text-muted">
+            Named alongside the subject in page text, so they are affiliations
+            rather than connections to make.
+          </p>
+          <ul className="mt-3 flex flex-wrap gap-1.5">
+            {report.network_affiliations.slice(0, 10).map((entry, index) => (
+              <li
+                key={`${index}-${entry.name}`}
+                className="rounded-full border border-hairline bg-canvas px-3 py-1 text-[12px] text-body"
+              >
+                {entry.name}
+                {entry.tie ? (
+                  <span className="text-faint"> · {entry.tie}</span>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
       {report.current_network.length > 0 && (
         <section className="rounded-xl border border-hairline bg-surface p-5">
           <h3 className="text-[15px] font-bold tracking-tight text-title">Already in the network</h3>

@@ -1,0 +1,27 @@
+{
+  "description": "Held-out set. Written after the lexicon was finalised and never used to tune it, so the score here is a generalisation estimate rather than a measure of fit. Do not tune against this file; if it is used for tuning it stops being a holdout and a fresh one is needed.",
+  "labelled_by": "manual",
+  "items": [
+    {"headline": "Competition Commission approves the merger without conditions", "label": "positive"},
+    {"headline": "Textile maker reports third straight quarter of losses", "label": "negative"},
+    {"headline": "Group signs memorandum for a semiconductor plant in Gujarat", "label": "positive"},
+    {"headline": "Whistleblower complaint alleges inflated revenue at the subsidiary", "label": "negative"},
+    {"headline": "Chief operating officer to retire at the end of the financial year", "label": "neutral"},
+    {"headline": "Bank writes off Rs 2,300 crore in bad loans", "label": "negative"},
+    {"headline": "Retailer opens its hundredth store in the country", "label": "positive"},
+    {"headline": "Promoter pledges additional shares to raise working capital", "label": "negative"},
+    {"headline": "Company to consider bonus issue at its next board meeting", "label": "neutral"},
+    {"headline": "Tribunal stays the resolution plan pending further hearing", "label": "negative"},
+    {"headline": "Logistics firm reports flat volumes for the third quarter", "label": "neutral"},
+    {"headline": "Insurer receives regulatory approval to launch health product", "label": "positive"},
+    {"headline": "Customs department detains consignment over valuation dispute", "label": "negative"},
+    {"headline": "Founder sells 3% stake in a block deal", "label": "neutral"},
+    {"headline": "Cement maker commissions new grinding unit in Rajasthan", "label": "positive"},
+    {"headline": "Trading in the scrip suspended pending clarification", "label": "negative"},
+    {"headline": "Firm appoints two independent directors to its board", "label": "neutral"},
+    {"headline": "Arbitration panel rules in favour of the company", "label": "positive"},
+    {"headline": "Employees allege unpaid salaries for three months", "label": "negative"},
+    {"headline": "Company clarifies media report on stake sale talks", "label": "neutral"},
+    {"headline": "Exports rise 22% on strong demand from West Asia", "label": "positive"}
+  ]
+}

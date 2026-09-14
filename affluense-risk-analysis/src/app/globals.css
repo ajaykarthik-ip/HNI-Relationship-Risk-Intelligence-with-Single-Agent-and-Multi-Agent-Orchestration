@@ -1,0 +1,86 @@
+@import "tailwindcss";
+
+/*
+  Two visual systems live here.
+
+  v2 (default)  the working application: a query tool. Cool near-white,
+                indigo for the product's own voice, and a signal set that is
+                only ever used for risk. Nothing is indigo and red at once.
+  v1 (/v1)      the earlier ledger treatment, kept for comparison.
+*/
+@theme {
+  /* --- v2 ------------------------------------------------------------- */
+  --color-canvas: #f5f6fa;
+  --color-surface: #ffffff;
+  --color-sunken: #eef0f7;
+  --color-hairline: #e2e5ef;
+  --color-edge: #cdd2e2;
+
+  --color-title: #10121a;
+  --color-body: #3d4459;
+  --color-muted: #6b7389;
+  --color-faint: #9aa1b5;
+
+  --color-brand: #4f46e5;
+  --color-brand-soft: #ecebff;
+  --color-brand-deep: #3730a3;
+
+  --color-danger: #d21c1c;
+  --color-danger-soft: #fdeaea;
+  --color-warn: #b45309;
+  --color-warn-soft: #fdf3e3;
+  --color-good: #067a55;
+  --color-good-soft: #e6f6f0;
+
+  /* --- v1, unchanged --------------------------------------------------- */
+  --color-ground: #e8ecf0;
+  --color-paper: #fbfcfd;
+  --color-ink: #0f1b26;
+  --color-ink-soft: #5b6b7a;
+  --color-ink-faint: #8b99a6;
+  --color-rule: #ccd6de;
+  --color-rule-soft: #e2e8ed;
+  --color-flag: #a4231f;
+  --color-flag-wash: #f6e9e8;
+  --color-watch: #8a5a10;
+  --color-clear: #1c6b4a;
+
+  --font-sans: var(--font-jakarta), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains), ui-monospace, monospace;
+  --font-serif: var(--font-plex-serif), ui-serif, Georgia, serif;
+}
+
+:root {
+  color-scheme: light;
+}
+
+body {
+  background: var(--color-canvas);
+  color: var(--color-title);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Numerals line up wherever they are compared. */
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* One orchestrated entrance for results, not a effect on every card. */
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+.rise {
+  animation: rise 0.32s cubic-bezier(0.2, 0.7, 0.3, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

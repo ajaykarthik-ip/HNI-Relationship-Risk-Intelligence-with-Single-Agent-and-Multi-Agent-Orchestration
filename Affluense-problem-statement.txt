@@ -1,0 +1,71 @@
+﻿Problem Statement 1:
+You are given the name of a high-net-worth individual (HNI/UHNI) and one of their connected companies. Your task is to build a Python solution that:
+1. Identifies all connected companies for the given individual.
+
+2. Gathers publicly available information from various online sources (e.g., news articles, databases, social media, etc.).
+
+3. Performs sentiment analysis on the gathered data and classifies the sentiment as positive, negative, or neutral.
+
+4. Detects any negative news related to fraud, scams, lawsuits, or allegations.
+
+5. Outputs the results in a structured format (e.g., JSON or CSV) with the following details:
+
+   * Company Name
+
+   * Sentiment Classification (positive, negative, neutral)
+
+   * Flag for Negative News (fraud, scam, lawsuit, etc.)
+
+Requirements:
+      * Input: The individual’s name and one company name.
+
+      * Output: A list of suggested connections with relevance scores in JSON or CSV format.
+
+      * Architecture: Design the overall architecture of the solution.
+
+
+      * Python Code: Write the Python code that implements this system.
+
+         * Focus on data quality and scalability.
+
+         * Use appropriate libraries for data fetching, sentiment analysis, or machine learning if necessary.
+
+         * The code should be modular, maintainable, and reusable.
+
+
+Problem Statement 2:
+You are given the name of a high-net-worth individual (HNI/UHNI) and one of their connected companies. Your task is to design a system and implement a Python solution that will:
+            1. Identify the current network of the individual (e.g., co-founders, colleagues, key employees in the company).
+
+            2. Suggest potential connections globally, based on:
+
+               * Similar roles (e.g., CTOs, co-founders).
+
+               * Similar industries (e.g., FinTech, Tech).
+
+               * Relevant connections: Professionals who could help expand the individual’s network.
+
+                  3. Output the suggestions in a structured format (e.g., JSON or CSV) containing:
+
+                     * Suggested individuals (e.g., name, company).
+
+                     * Relevance score indicating the similarity to the individual’s network.
+
+Requirements:
+                        * Input: The individual’s name and one company name.
+
+                        * Output: A list of suggested connections with relevance scores in JSON or CSV format.
+
+                        * Architecture: Design the overall architecture of the solution.
+
+                           * Identify how you would fetch current connections, analyze profiles, and recommend connections.
+
+                           * Provide details on data sources and any external APIs you would use (e.g., LinkedIn API, Crunchbase).
+
+                              * Python Code: Write the Python code that implements this system.
+
+                                 * Focus on data quality and scalability.
+
+                                 * Use appropriate libraries for data fetching, sentiment analysis, or machine learning if necessary.
+
+                                 * The code should be modular, maintainable, and reusable.

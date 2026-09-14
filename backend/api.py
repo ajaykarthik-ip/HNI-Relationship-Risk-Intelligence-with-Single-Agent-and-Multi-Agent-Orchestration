@@ -45,11 +45,17 @@ from affluense.network.pipeline import Options as NetworkOptions
 from affluense.network.pipeline import run as run_network
 from affluense.pipeline import Options as ScreeningOptions
 from affluense.pipeline import run as run_screening
+from affluense_v2 import pipeline as v2_pipeline
 
 config.load_env_file()
 
 JobKind = Literal["screening", "network"]
 JobStatus = Literal["queued", "running", "done", "error", "cancelled"]
+# Which execution engine runs the job. "v1" is the stable sequential pipeline
+# and stays the default, so every existing caller behaves exactly as before.
+# "v2" is the concurrent orchestration engine in `affluense_v2`; both produce
+# the same report through the same `output.build_report`.
+Engine = Literal["v1", "v2"]
 
 
 def utc_now() -> str:
@@ -87,8 +93,8 @@ class ConfirmedEntity(BaseModel):
 
 
 class ScreeningRequest(BaseModel):
-    name: str = Field(..., min_length=2, examples=["Ratan Tata"])
-    company: str | None = Field(None, examples=["Tata Sons"])
+    name: str = Field(..., min_length=2, examples=["Mukesh Ambani"])
+    company: str | None = Field(None, examples=["Reliance Industries"])
     max_companies: int = Field(12, ge=1, le=40)
     max_news: int = Field(25, ge=1, le=100)
     workers: int = Field(6, ge=1, le=16)
@@ -97,6 +103,9 @@ class ScreeningRequest(BaseModel):
     # Optional so the CLI and existing callers keep working. When supplied,
     # the pipeline trusts it instead of guessing the identity itself.
     confirmed: ConfirmedEntity | None = None
+    engine: Engine = Field(
+        "v1", description="v1 = stable sequential pipeline, v2 = concurrent."
+    )
 
 
 class NetworkRequest(BaseModel):
@@ -108,6 +117,9 @@ class NetworkRequest(BaseModel):
     use_firecrawl: bool = True
     use_cache: bool = True
     confirmed: ConfirmedEntity | None = None
+    engine: Engine = Field(
+        "v1", description="v1 = stable sequential pipeline, v2 = concurrent."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -142,14 +154,25 @@ _SCREENING_PERSON = re.compile(r"screening the individual", re.I)
 _SCREEN_FROM, _SCREEN_TO = 52, 90
 
 
-def run_progress(progress: list, status: JobStatus) -> tuple:
+def run_progress(progress: list, status: JobStatus, engine: Engine = "v1",
+                 state: dict | None = None) -> tuple:
     """(percent, phase) for a run, from its full step history.
 
     Never reports 100 while work is outstanding: a bar sitting full while the
     user waits is worse than one sitting at 97.
+
+    V2 does not go through the string matching below, and could not: with nine
+    evidence agents in flight the "Screening: X" lines arrive interleaved, so
+    counting them says nothing about how much work is left. It reports a
+    structured event instead and this reads it verbatim. V1's path is
+    unchanged, character for character.
     """
     if status in ("done", "error", "cancelled"):
         return 100, status
+    if engine == "v2":
+        if not state:
+            return 2, "starting"
+        return int(state.get("percent", 2)), state.get("phase", "running")
     if not progress:
         return 2, "starting"
 
@@ -187,6 +210,9 @@ class Job:
     kind: JobKind
     name: str
     company: str | None
+    # Which engine ran it. Stored on the job so the UI can label a finished
+    # report and a benchmark can tell two runs of the same subject apart.
+    engine: Engine = "v1"
     status: JobStatus = "queued"
     progress: list = field(default_factory=list)
     result: dict | None = None
@@ -196,12 +222,19 @@ class Job:
     # Set by /cancel. The worker checks it every time the pipeline reports a
     # step, which is often enough to stop within a second or two.
     cancelled: threading.Event = field(default_factory=threading.Event)
+    # V2 only: the last structured progress event. V1 leaves this None and its
+    # percentage keeps coming from the step history.
+    v2_state: dict | None = None
 
     def summary(self) -> dict:
-        percent, phase = run_progress(self.progress, self.status)
+        percent, phase = run_progress(
+            self.progress, self.status, self.engine, self.v2_state,
+        )
+        stages = (self.v2_state or {}).get("stages") if self.engine == "v2" else None
         return {
             "job_id": self.id,
             "kind": self.kind,
+            "engine": self.engine,
             "name": self.name,
             "company": self.company,
             "status": self.status,
@@ -213,6 +246,7 @@ class Job:
             "finished_at": self.finished_at,
             "error": self.error,
             "result_available": self.result is not None,
+            "stages": stages,
         }
 
 
@@ -224,8 +258,10 @@ class JobStore:
         self._lock = threading.Lock()
         self._pool = ThreadPoolExecutor(max_workers=max_workers)
 
-    def create(self, kind: JobKind, name: str, company: str | None) -> Job:
-        job = Job(id=uuid.uuid4().hex[:12], kind=kind, name=name, company=company)
+    def create(self, kind: JobKind, name: str, company: str | None,
+               engine: Engine = "v1") -> Job:
+        job = Job(id=uuid.uuid4().hex[:12], kind=kind, name=name,
+                  company=company, engine=engine)
         with self._lock:
             self._jobs[job.id] = job
         return job
@@ -267,8 +303,19 @@ class JobStore:
                     raise RunCancelled()
                 job.progress.append(line)
 
+            def on_event(event: dict) -> None:
+                """V2's structured progress, and a second cancellation point.
+
+                V2 reports stage state that no amount of regexing the log could
+                reconstruct once several agents are running at once. It is
+                stored verbatim and read back by `run_progress`.
+                """
+                if job.cancelled.is_set():
+                    raise RunCancelled()
+                job.v2_state = event
+
             try:
-                job.result = work(on_progress)
+                job.result = work(on_progress, on_event)
                 job.status = "done"
             except RunCancelled:
                 job.status = "cancelled"
@@ -326,6 +373,10 @@ def health() -> dict:
         "firecrawl_configured": bool(os.environ.get("FIRECRAWL_API_KEY")),
         "openai": openai_client.describe_configuration(),
         "jobs": len(store.all()),
+        # The UI hides the engine selector when only one engine is available.
+        "engines": ["v1", "v2"],
+        "default_engine": "v1",
+        "v2": v2_pipeline.describe(),
     }
 
 
@@ -352,23 +403,51 @@ def find_candidates(request: CandidateRequest) -> dict:
 
 @app.post("/api/screening", status_code=202, tags=["screening"])
 def start_screening(request: ScreeningRequest) -> dict:
-    """Problem Statement 1: connected companies, sentiment, adverse-news flags."""
-    job = store.create("screening", request.name, request.company)
+    """Problem Statement 1: connected companies, sentiment, adverse-news flags.
 
-    def work(on_progress):
-        options = ScreeningOptions(
-            max_companies=request.max_companies,
-            max_news=request.max_news,
-            workers=request.workers,
-            firecrawl_key=(os.environ.get("FIRECRAWL_API_KEY")
-                           if request.use_firecrawl else None),
-            cache_dir=".cache" if request.use_cache else None,
-            verbose=False,
-            on_progress=on_progress,
-            confirmed_entity=(request.confirmed.model_dump()
-                              if request.confirmed else None),
-        )
-        result = run_screening(request.name, request.company, options)
+    `engine` picks which pipeline runs it. Both hand the same result dict to the
+    same `output.build_report`, so the delivered report has an identical shape
+    and the two can be compared on one subject.
+    """
+    job = store.create("screening", request.name, request.company,
+                       request.engine)
+
+    def work(on_progress, on_event):
+        firecrawl_key = (os.environ.get("FIRECRAWL_API_KEY")
+                         if request.use_firecrawl else None)
+        cache_dir = ".cache" if request.use_cache else None
+        confirmed = (request.confirmed.model_dump()
+                     if request.confirmed else None)
+
+        if request.engine == "v2":
+            options = v2_pipeline.Options(
+                max_companies=request.max_companies,
+                max_news=request.max_news,
+                workers=request.workers,
+                firecrawl_key=firecrawl_key,
+                cache_dir=cache_dir,
+                verbose=False,
+                on_progress=on_progress,
+                on_event=on_event,
+                confirmed_entity=confirmed,
+            )
+            result = v2_pipeline.run(request.name, request.company, options)
+            # V2 assembles through V1's builder, then applies its own
+            # confidence cap. Same report shape either way.
+            return v2_pipeline.build_report(result, request.name, request.company)
+        else:
+            options = ScreeningOptions(
+                max_companies=request.max_companies,
+                max_news=request.max_news,
+                workers=request.workers,
+                firecrawl_key=firecrawl_key,
+                cache_dir=cache_dir,
+                verbose=False,
+                on_progress=on_progress,
+                confirmed_entity=confirmed,
+            )
+            result = run_screening(request.name, request.company, options)
+
         return screening_output.build_report(result, request.name, request.company)
 
     store.submit(job, work)
@@ -378,22 +457,43 @@ def start_screening(request: ScreeningRequest) -> dict:
 @app.post("/api/network", status_code=202, tags=["network"])
 def start_network(request: NetworkRequest) -> dict:
     """Problem Statement 2: current network and ranked connection suggestions."""
-    job = store.create("network", request.name, request.company)
+    job = store.create("network", request.name, request.company,
+                       request.engine)
 
-    def work(on_progress):
-        options = NetworkOptions(
-            max_suggestions=request.max_suggestions,
-            industries=request.industries,
-            roles=request.roles,
-            firecrawl_key=(os.environ.get("FIRECRAWL_API_KEY")
-                           if request.use_firecrawl else None),
-            cache_dir=".cache" if request.use_cache else None,
-            verbose=False,
-            on_progress=on_progress,
-            confirmed_entity=(request.confirmed.model_dump()
-                              if request.confirmed else None),
-        )
-        result = run_network(request.name, request.company, options)
+    def work(on_progress, on_event):
+        firecrawl_key = (os.environ.get("FIRECRAWL_API_KEY")
+                         if request.use_firecrawl else None)
+        cache_dir = ".cache" if request.use_cache else None
+        confirmed = (request.confirmed.model_dump()
+                     if request.confirmed else None)
+
+        if request.engine == "v2":
+            options = v2_pipeline.Options(
+                max_suggestions=request.max_suggestions,
+                industries=request.industries,
+                roles=request.roles,
+                firecrawl_key=firecrawl_key,
+                cache_dir=cache_dir,
+                verbose=False,
+                on_progress=on_progress,
+                on_event=on_event,
+                confirmed_entity=confirmed,
+            )
+            result = v2_pipeline.run_network(request.name, request.company,
+                                             options)
+        else:
+            options = NetworkOptions(
+                max_suggestions=request.max_suggestions,
+                industries=request.industries,
+                roles=request.roles,
+                firecrawl_key=firecrawl_key,
+                cache_dir=cache_dir,
+                verbose=False,
+                on_progress=on_progress,
+                confirmed_entity=confirmed,
+            )
+            result = run_network(request.name, request.company, options)
+
         return network_output.build_report(result, request.name, request.company)
 
     store.submit(job, work)

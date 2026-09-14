@@ -22,7 +22,7 @@ const plexSerif = IBM_Plex_Serif({
 });
 
 export const metadata: Metadata = {
-  title: "Affluense — client screening",
+  title: "Affluense",
   description:
     "Adverse-media screening and network intelligence for high-net-worth individuals.",
 };

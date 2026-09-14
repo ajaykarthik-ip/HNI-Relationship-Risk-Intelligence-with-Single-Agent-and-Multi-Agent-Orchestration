@@ -8,6 +8,7 @@ import {
   getHealth,
   runJob,
   type Candidate,
+  type Engine,
   type CandidateResponse,
   type Health,
   type Job,
@@ -17,11 +18,18 @@ import {
 } from "@/lib/api";
 import { CandidatePicker } from "@/components/candidate-picker";
 import { CostPanel } from "@/components/cost-panel";
+import { EngineCompare, type EngineRun } from "@/components/engine-compare";
+import { EngineSelector } from "@/components/engine-selector";
 import { NetworkView } from "@/components/v2/network-view";
 import { RunStatus } from "@/components/v2/run-status";
 import { ScreeningReportView } from "@/components/v2/screening-report";
 
 type Mode = JobKind | "both";
+
+// Hidden for now. `useCache` still defaults to false, so every run is fresh --
+// which is what you want while the engines are being compared, because a warm
+// cache makes whichever engine runs second look faster than it is.
+const SHOW_CACHE_TOGGLE = false;
 
 const MODES: { id: Mode; label: string; blurb: string }[] = [
   {
@@ -41,20 +49,17 @@ const MODES: { id: Mode; label: string; blurb: string }[] = [
   },
 ];
 
-const EXAMPLES = [
-  { name: "Ratan Tata", company: "Tata Sons" },
-  { name: "Azim Premji", company: "Wipro" },
-  { name: "Mukesh Ambani", company: "Reliance Industries" },
-  { name: "Virat Kohli", company: "One8 Commune" },
-];
-
 export default function Home() {
   const [health, setHealth] = useState<Health | null>(null);
   const [healthError, setHealthError] = useState<string | null>(null);
 
-  const [name, setName] = useState("Ratan Tata");
-  const [company, setCompany] = useState("Tata Sons");
+  const [name, setName] = useState("");
+  const [company, setCompany] = useState("");
   const [mode, setMode] = useState<Mode>("screening");
+  // Which backend engine runs the research. V1 stays the default: it is the
+  // stable pipeline, and the selector exists to compare against it rather than
+  // to quietly replace it.
+  const [engine, setEngine] = useState<Engine>("v1");
   const [useFirecrawl, setUseFirecrawl] = useState(true);
   // Off while the pipeline is being worked on: news changes between runs and a
   // cached answer hides whether a fix actually did anything. Turn it back on
@@ -69,6 +74,10 @@ export default function Home() {
     screening?: { job: Job; report: ScreeningReport };
     network?: { job: Job; report: NetworkReport };
   }>({});
+  // Every screening this subject has produced, keyed by engine, so a V1 result
+  // and a V2 result sit side by side instead of overwriting each other.
+  // Cleared whenever the subject changes.
+  const [compare, setCompare] = useState<Partial<Record<Engine, EngineRun>>>({});
   const [liveJob, setLiveJob] = useState<Job | null>(null);
   const [view, setView] = useState<JobKind>("screening");
   const [error, setError] = useState<string | null>(null);
@@ -102,6 +111,7 @@ export default function Home() {
   const findWhoTheyMean = useCallback(async () => {
     setError(null);
     setRuns({});
+    setCompare({});
     setLiveJob(null);
     setCandidates(null);
     setElapsed(0);
@@ -147,6 +157,7 @@ export default function Home() {
 
     try {
       for (const kind of kinds) {
+        const startedAt = Date.now();
         const { job, report } = await runJob<ScreeningReport | NetworkReport>(
           kind,
           {
@@ -155,6 +166,7 @@ export default function Home() {
             useFirecrawl,
             useCache,
             confirmed,
+            engine,
           },
           setLiveJob,
           abort.current.signal,
@@ -165,11 +177,20 @@ export default function Home() {
             ? { ...previous, screening: { job, report: report as ScreeningReport } }
             : { ...previous, network: { job, report: report as NetworkReport } },
         );
+        if (kind === "screening") {
+          // Kept per engine rather than per run, so re-running the same engine
+          // replaces its own row and the other engine's result survives.
+          const seconds = Math.round((Date.now() - startedAt) / 1000);
+          setCompare((previous) => ({
+            ...previous,
+            [engine]: { job, report: report as ScreeningReport, seconds },
+          }));
+        }
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
-  }, [mode, company, useFirecrawl, useCache]);
+  }, [mode, company, useFirecrawl, useCache, engine]);
 
   /**
    * Stop the run for real.
@@ -302,7 +323,11 @@ export default function Home() {
                 onChange={(e) => setName(e.target.value)}
                 required
                 minLength={2}
-                placeholder={lookingFor === "company" ? "Company name" : "Full name"}
+                placeholder={
+                  lookingFor === "company"
+                    ? "Company name, e.g. the registered entity"
+                    : "Full name of the individual"
+                }
                 className="mt-1.5 w-full rounded-lg border border-edge bg-canvas px-3.5 py-2.5 text-[15px] text-title outline-none transition-colors placeholder:text-faint focus:border-brand focus:bg-surface focus:ring-4 focus:ring-brand/10"
               />
             </label>
@@ -348,6 +373,17 @@ export default function Home() {
             </p>
           </div>
 
+          <EngineSelector
+            engine={engine}
+            onChange={setEngine}
+            disabled={running || findingCandidates}
+            available={health?.engines}
+            // Real timings from this subject's runs. They replace the
+            // estimates on the buttons, so what is on screen is measured
+            // rather than projected as soon as there is anything to measure.
+            lastRun={{ v1: compare.v1?.seconds, v2: compare.v2?.seconds }}
+          />
+
           <div className="mt-6 flex flex-wrap items-center gap-4 border-t border-hairline pt-5">
             <button
               type="submit"
@@ -382,39 +418,27 @@ export default function Home() {
               )}
             </label>
 
-            <label className="flex cursor-pointer items-center gap-2 text-[13px] text-body">
-              <input
-                type="checkbox"
-                checked={useCache}
-                onChange={(e) => setUseCache(e.target.checked)}
-                className="h-4 w-4 accent-brand"
-              />
-              Reuse cached data
-              <span className="text-faint">
-                {useCache ? "(free, may be stale)" : "(fresh — spends credits)"}
-              </span>
-            </label>
+            {SHOW_CACHE_TOGGLE && (
+              <label className="flex cursor-pointer items-center gap-2 text-[13px] text-body">
+                <input
+                  type="checkbox"
+                  checked={useCache}
+                  onChange={(e) => setUseCache(e.target.checked)}
+                  className="h-4 w-4 accent-brand"
+                />
+                Reuse cached data
+                <span className="text-faint">
+                  {useCache ? "(free, may be stale)" : "(fresh — spends credits)"}
+                </span>
+              </label>
+            )}
 
             <span className="ml-auto text-[12px] text-faint">
-              Finding candidates is free · research runs 40–90s
+              Finding candidates is free ·{" "}
+              {engine === "v2"
+                ? "agents research in parallel"
+                : "a full run takes several minutes"}
             </span>
-          </div>
-
-          <div className="mt-4 flex flex-wrap items-center gap-2">
-            <span className="text-[12px] text-faint">Try</span>
-            {EXAMPLES.map((example) => (
-              <button
-                key={example.name}
-                type="button"
-                onClick={() => {
-                  setName(example.name);
-                  setCompany(example.company);
-                }}
-                className="rounded-full border border-hairline bg-canvas px-3 py-1 text-[12px] font-medium text-body transition-colors hover:border-brand hover:text-brand"
-              >
-                {example.name}
-              </button>
-            ))}
           </div>
         </form>
 
@@ -484,6 +508,12 @@ export default function Home() {
                 Download CSV
               </a>
             </div>
+
+            {view === "screening" && (compare.v1 || compare.v2) && (
+              <div className="mb-5">
+                <EngineCompare runs={compare} />
+              </div>
+            )}
 
             {view === "screening" && runs.screening ? (
               <ScreeningReportView report={runs.screening.report} />

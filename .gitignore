@@ -53,6 +53,16 @@ backend/*.json
 backend/*.csv
 backend/archive/*.json
 !backend/requirements.json
+# The V1 hash baseline. Not a report -- it is what makes "V1 is unchanged"
+# a check a machine performs rather than a promise a person remembers, so it
+# has to travel with the repository.
+!backend/v1-manifest.json
+
+# bench.py gives each engine its own cold cache. Those hold fetched article
+# bodies about real named individuals -- the same reason the reports above stay
+# local.
+backend/.cache-bench/
+.cache-bench/
 
 # --- editor and OS -----------------------------------------------------------
 .vscode/

@@ -13,9 +13,30 @@ export type JobKind = "screening" | "network";
 export type JobStatus = "queued" | "running" | "done" | "error" | "cancelled";
 export type Sentiment = "positive" | "neutral" | "negative";
 
+/**
+ * Which backend engine runs the job.
+ *
+ * "v1" is the stable sequential pipeline and stays the default everywhere.
+ * "v2" is the concurrent orchestration engine. Both produce the identical
+ * report shape, which is what makes them comparable on one subject — so
+ * nothing below this line needs to know which one ran.
+ */
+export type Engine = "v1" | "v2";
+
+/** One stage of a V2 run. V1 jobs report `stages: null`. */
+export interface StageProgress {
+  stage: string;
+  done: number;
+  total: number;
+  complete: boolean;
+  elapsed_s: number;
+}
+
 export interface Job {
   job_id: string;
   kind: JobKind;
+  /** Which engine ran it. Absent on a backend that predates the selector. */
+  engine?: Engine;
   name: string;
   company: string | null;
   status: JobStatus;
@@ -34,6 +55,14 @@ export interface Job {
   finished_at: string | null;
   error: string | null;
   result_available: boolean;
+  /**
+   * Per-stage progress, V2 only.
+   *
+   * V1 infers its percentage by matching printed log lines, which cannot work
+   * once several agents report at once — so V2 sends structured state instead
+   * and this is it. Null for V1.
+   */
+  stages?: StageProgress[] | null;
 }
 
 export interface Health {
@@ -43,6 +72,9 @@ export interface Health {
   firecrawl_configured: boolean;
   openai: { configured: boolean; model: string | null; note: string };
   jobs: number;
+  /** Engines this backend can run. Older backends omit it and mean ["v1"]. */
+  engines?: Engine[];
+  default_engine?: Engine;
 }
 
 /**
@@ -340,6 +372,8 @@ export interface Suggestion {
 }
 
 export interface NetworkReport {
+  /** Where the candidate pool came from. V2 only; V1 omits it. */
+  candidate_sources?: { registry: number; news: number };
   query: { individual: string; company: string | null; collected_at: string };
   subject: Subject;
   profile: { roles: string[]; industries: string[]; countries: string[]; companies: string[] };
@@ -426,6 +460,8 @@ export interface RunOptions {
   maxSuggestions?: number;
   /** The candidate the user picked. Skips the backend's own identity guess. */
   confirmed?: Candidate | null;
+  /** Which engine to run it on. Defaults to the stable V1 pipeline. */
+  engine?: Engine;
 }
 
 /** Submit, poll, and resolve with the finished report. */
@@ -448,6 +484,10 @@ export async function runJob<T>(
       }
     : null;
 
+  // Sent on both shapes. The backend defaults it to "v1", so omitting it is
+  // the same as asking for the stable pipeline.
+  const engine: Engine = options.engine ?? "v1";
+
   const payload =
     kind === "screening"
       ? {
@@ -458,6 +498,7 @@ export async function runJob<T>(
           max_news: options.maxNews ?? 20,
           use_cache: options.useCache ?? true,
           confirmed,
+          engine,
         }
       : {
           name: options.name,
@@ -466,6 +507,7 @@ export async function runJob<T>(
           max_suggestions: options.maxSuggestions ?? 20,
           use_cache: options.useCache ?? true,
           confirmed,
+          engine,
         };
 
   let job = await request<Job>(`/api/${kind}`, {

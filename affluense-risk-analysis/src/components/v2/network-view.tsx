@@ -5,7 +5,13 @@ import { Pill, ScoreDial, Stat } from "./primitives";
 
 export function NetworkView({ report }: { report: NetworkReport }) {
   const suggestions = report.suggested_connections;
-  const weakBasis = report.candidate_basis === "occupation";
+  const basis = report.candidate_basis ?? "";
+  // Occupation-only matching is weak. So is a candidate read out of a
+  // headline: the role and company are stated by a publisher rather than by a
+  // registry, which is a different quality of claim and should say so.
+  const occupationOnly = basis === "occupation";
+  const fromNews = basis.includes("news");
+  const weakBasis = occupationOnly || fromNews;
 
   return (
     <div className="space-y-5">
@@ -29,15 +35,23 @@ export function NetworkView({ report }: { report: NetworkReport }) {
         </div>
         {weakBasis && (
           <p className="mt-3 max-w-[75ch] rounded-lg bg-surface/80 px-3 py-2 text-[12px] leading-relaxed text-warn">
-            No industry could be established for this subject, so these are matched on shared
-            occupation only. Treat them as weak suggestions — the scores say so too.
+            {occupationOnly
+              ? "No industry could be established for this subject, so these are matched on shared occupation only. Treat them as weak suggestions — the scores say so too."
+              : "Some of these were identified from news coverage rather than a company registry, so their role and company come from a headline and are not registry-verified. Check the source on each before acting."}
           </p>
         )}
       </div>
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <Stat value={report.counts.current_network ?? 0} label="Already connected" />
-        <Stat value={report.counts.candidate_pool ?? 0} label="Candidates considered" />
+        <Stat
+          value={report.counts.candidate_pool ?? 0}
+          label={
+            report.candidate_sources?.news
+              ? `Considered (${report.candidate_sources.registry ?? 0} registry, ${report.candidate_sources.news} news)`
+              : "Candidates considered"
+          }
+        />
         <Stat value={suggestions.length} label="Suggested" />
         <Stat value={report.profile.companies.length} label="Companies" />
       </div>

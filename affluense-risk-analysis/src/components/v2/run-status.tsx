@@ -1,6 +1,7 @@
 "use client";
 
 import type { Job } from "@/lib/api";
+import { EngineBadge } from "@/components/engine-selector";
 
 /**
  * The backend reports the same step lines the CLI prints. A run takes a minute
@@ -130,14 +131,19 @@ export function RunStatus({
         </span>
 
         <div className="min-w-0 flex-1">
-          <p className="truncate text-[14px] font-medium text-title">
-            {running
-              ? latest || "Starting…"
-              : job.status === "error"
-                ? "Failed"
-                : job.status === "cancelled"
-                  ? "Stopped"
-                  : "Finished"}
+          <p className="flex items-center gap-2 text-[14px] font-medium text-title">
+            {/* Which engine produced this, so a result is never ambiguous when
+                the same subject has been run on both. */}
+            <EngineBadge engine={job.engine} />
+            <span className="truncate">
+              {running
+                ? latest || "Starting…"
+                : job.status === "error"
+                  ? "Failed"
+                  : job.status === "cancelled"
+                    ? "Stopped"
+                    : "Finished"}
+            </span>
           </p>
           <p className="mt-0.5 text-[12px] text-muted">
             {running && job.phase ? job.phase : caption}
@@ -166,6 +172,29 @@ export function RunStatus({
           </button>
         )}
       </div>
+
+      {/* V2 reports which stages have finished and how long each took. V1
+          sends nothing here and this simply does not render. */}
+      {job.stages && job.stages.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 border-t border-hairline px-5 py-2.5">
+          {job.stages.map((stage) => (
+            <span
+              key={stage.stage}
+              title={`${stage.elapsed_s}s`}
+              className={`rounded px-2 py-0.5 font-mono text-[11px] ${
+                stage.complete
+                  ? "bg-good/10 text-good"
+                  : stage.done > 0
+                    ? "bg-brand/10 text-brand"
+                    : "bg-sunken text-faint"
+              }`}
+            >
+              {stage.stage}
+              {stage.total > 0 ? ` ${stage.done}/${stage.total}` : ""}
+            </span>
+          ))}
+        </div>
+      )}
 
       {job.progress.length > 1 && (
         <details className="border-t border-hairline">

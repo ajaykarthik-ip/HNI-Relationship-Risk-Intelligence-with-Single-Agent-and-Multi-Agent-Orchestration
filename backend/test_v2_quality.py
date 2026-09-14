@@ -819,3 +819,92 @@ def test_a_corroborated_company_still_attributes():
         subject_name=SUBJECT,
     ))
     assert findings[0].attributed_to_subject
+
+
+def test_same_entity_category_and_month_is_one_finding():
+    """The id scheme used to notice this and report them separately anyway.
+
+    `_stamp` takes the first dated article in a group, so two groups spanning
+    different ranges can both stamp one month while the articles compared sit
+    outside the similarity window.
+    """
+    group = [
+        article(published="2026-03-02", category="fraud",
+                summary="Deposits at a branch were misappropriated",
+                role="accused", publisher="Outlet One"),
+        article(published="2026-03-28", category="fraud",
+                summary="Branch deposit case widens", role="accused",
+                publisher="Outlet Two"),
+        article(published="2026-07-20", category="fraud",
+                summary="Entirely different wording about the branch matter",
+                role="accused", publisher="Outlet Three"),
+    ]
+    findings = run(quality_events.build_findings(
+        FakeBridge(), group, "Some Bank Ltd", "role", "current_company",
+        subject_name=SUBJECT,
+    ))
+    ids = [f.event_id for f in findings]
+    assert not any(i.endswith("-2") for i in ids), (
+        "a '-2' suffix means the id scheme identified a duplicate the "
+        "clustering then reported twice"
+    )
+
+
+def test_consolidation_unions_the_evidence():
+    """Tested directly, because the collision it fixes is hard to stage.
+
+    Two clusters share a stamp only when their earliest articles fall in one
+    month while their contents never matched -- which needs a cluster whose
+    dominant category comes from a minority of its articles. Driving that
+    through `build_findings` would test the setup more than the behaviour.
+    """
+    duplicate = [
+        finding(event_id="some-bank-ltd-fraud-202603", entity="Some Bank Ltd",
+                publishers=("Outlet One",), urls=("https://a.test/1",),
+                severity=3, summary="Deposits at a branch were misappropriated"),
+        finding(event_id="some-bank-ltd-fraud-202603", entity="Some Bank Ltd",
+                publishers=("Outlet Two",), urls=("https://b.test/2",),
+                severity=4, summary="Branch deposit case widens further"),
+    ]
+    merged = quality_events._consolidate(duplicate)
+    assert len(merged) == 1
+    assert sorted(merged[0].corroborating_publishers) == ["Outlet One",
+                                                          "Outlet Two"]
+    assert len(merged[0].evidence) == 2
+    assert merged[0].severity == 4
+
+
+def test_consolidation_leaves_distinct_ids_alone():
+    distinct = [
+        finding(event_id="some-bank-ltd-fraud-202603", entity="Some Bank Ltd"),
+        finding(event_id="some-bank-ltd-fraud-202607", entity="Some Bank Ltd"),
+        finding(event_id="some-bank-ltd-tax-202603", entity="Some Bank Ltd"),
+    ]
+    assert len(quality_events._consolidate(distinct)) == 3
+
+
+def test_consolidation_preserves_first_seen_order():
+    """Deterministic output: the survivor keeps its position."""
+    items = [
+        finding(event_id="b-fraud-202601", entity="B"),
+        finding(event_id="a-fraud-202601", entity="A"),
+        finding(event_id="b-fraud-202601", entity="B"),
+    ]
+    merged = quality_events._consolidate(items)
+    assert [f.event_id for f in merged] == ["b-fraud-202601", "a-fraud-202601"]
+
+
+def test_different_months_remain_separate():
+    """Consolidation keys on the month, so it cannot collapse a whole year."""
+    group = [
+        article(published="2026-01-10", category="fraud",
+                summary="A supplier contract matter", role="accused"),
+        article(published="2026-09-10", category="fraud",
+                summary="A property transfer matter entirely unrelated",
+                role="accused"),
+    ]
+    findings = run(quality_events.build_findings(
+        FakeBridge(), group, "Some Bank Ltd", "role", "current_company",
+        subject_name=SUBJECT,
+    ))
+    assert len(findings) == 2

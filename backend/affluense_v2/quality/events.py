@@ -249,6 +249,7 @@ async def build_findings(bridge, articles: list, entity: str, entity_role: str,
 
         findings.append(finding)
 
+    findings = _consolidate(findings)
     findings.sort(key=lambda f: (-f.severity, -len(f.corroborating_publishers)))
     return _dedupe_ids(findings)
 
@@ -264,8 +265,34 @@ def _stamp(group: list) -> str:
     return "undated"
 
 
+def _consolidate(findings: list) -> list:
+    """Fold findings that share an entity, a category and a month.
+
+    `group_events` can still split one matter in two: `_stamp` takes the first
+    dated article in a group, so two groups spanning different ranges both
+    stamp the same month while the specific articles compared sit outside the
+    similarity window. The old code noticed this and appended "-2" to the id --
+    which is the identity check admitting the two are the same event and then
+    reporting them separately anyway.
+
+    Same entity, same category, same month is one matter. Anything genuinely
+    distinct at that resolution is rare, and under-counting is the safe
+    direction for a risk tool.
+    """
+    merged: dict = {}
+    order: list = []
+    for finding in findings:
+        existing = merged.get(finding.event_id)
+        if existing is None:
+            merged[finding.event_id] = finding
+            order.append(finding.event_id)
+            continue
+        _merge(existing, finding)
+    return [merged[event_id] for event_id in order]
+
+
 def _dedupe_ids(findings: list) -> list:
-    """Event ids must be unique; two events can legitimately share a stamp."""
+    """Last resort: ids must be unique even after consolidation."""
     seen: dict = {}
     for finding in findings:
         base = finding.event_id

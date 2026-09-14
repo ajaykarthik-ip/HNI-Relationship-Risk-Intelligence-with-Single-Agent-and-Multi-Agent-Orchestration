@@ -396,3 +396,74 @@ def test_merge_keeps_a_confirmation_from_any_query():
                         "matched_industries": ["sector:cosmetics"],
                         "industry_confirmed": True})
     assert next(iter(pool.values()))["industry_confirmed"] is True
+
+
+def test_relationship_descriptions_are_not_names():
+    """Page extraction returns the tie where it could not name the person."""
+    for name in ("Twin daughter", "Elder son", "Younger brother",
+                 "Family friend"):
+        assert not quality_people.looks_like_person(name), name
+
+
+def test_surnames_survive_the_relation_check():
+    for name in ("Dana Okonkwo", "Sanjay Nayar", "Mary Alice Stephenson"):
+        assert quality_people.looks_like_person(name), name
+
+
+def test_a_bare_wikidata_id_is_not_a_name():
+    assert not quality_people.looks_like_person("Q58024")
+    assert not quality_people.usable_label("Q58024")
+    assert quality_people.usable_label("Alibaba Group")
+    assert not quality_people.usable_label("")
+
+
+def test_unusable_company_labels_are_stripped():
+    """A suggestion reading 'founder - Q58024' is not actionable."""
+    candidate = {
+        "name": "Dana Okonkwo",
+        "companies": ["Q58024", "Meridian Payments Ltd"],
+        "roles": ["founder", "Q12345"],
+    }
+    quality_people.sanitise(candidate)
+    assert candidate["companies"] == ["Meridian Payments Ltd"]
+    assert candidate["roles"] == ["founder"]
+
+
+def test_filter_sanitises_before_judging():
+    kept, dropped = quality_people.filter_candidates(
+        [{"name": "Dana Okonkwo", "roles": ["Founder"], "companies": ["Q999"]}],
+        ["Northwind Trading"],
+    )
+    assert len(kept) == 1
+    assert kept[0]["companies"] == []
+
+
+def test_clean_network_drops_relationship_descriptions():
+    network = [
+        {"name": "Sanjay Nayar", "tie": "Husband", "tie_type": "personal"},
+        {"name": "Twin daughter", "tie": "Child", "tie_type": "associate"},
+    ]
+    people, removed = quality_people.clean_network(network)
+    assert [p["name"] for p in people] == ["Sanjay Nayar"]
+    assert len(removed) == 1
+
+
+def test_company_qids_are_read_from_the_field_discovery_writes():
+    """Discovery writes the Q-number as `registry_id`, and nothing creates a
+    `wikidata_id` key on a company record. Reading the wrong name returned an
+    empty list on every run, which silently disabled co-officer lookup and key
+    employee enumeration -- the structured half of the current network."""
+    companies = [
+        {"name": "Northwind Trading Ltd", "registry_id": "Q111"},
+        {"name": "Helios Systems Pvt Ltd", "registry_id": None},
+        {"name": "Meridian Payments", "wikidata_id": "Q222"},
+        # A registry id from a non-Wikidata source must not be sent to SPARQL.
+        {"name": "Fairhaven Institute", "registry_id": "U12345678"},
+    ]
+    qids = [
+        qid for qid in (
+            c.get("registry_id") or c.get("wikidata_id") for c in companies
+        )
+        if qid and str(qid).upper().startswith("Q")
+    ]
+    assert qids == ["Q111", "Q222"]

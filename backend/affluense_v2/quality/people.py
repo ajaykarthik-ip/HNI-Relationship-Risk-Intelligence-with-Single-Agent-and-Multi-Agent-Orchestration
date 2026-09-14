@@ -64,6 +64,21 @@ india indian asia asian america american europe european africa global
 the of and for with
 """.split())
 
+# Kinship and relationship words. Page extraction returns these where a page
+# described a connection without naming the person -- "Twin daughter", "Elder
+# son" -- and a description is not somebody you can be introduced to.
+RELATION_TOKEN = re.compile(
+    r"\b(son|daughter|wife|husband|spouse|child|children|kid|"
+    r"brother|sister|sibling|twin|mother|father|parent|grand\w+|"
+    r"cousin|nephew|niece|in-law|relative|family|elder|younger|"
+    r"friend|colleague|associate|aide|assistant)\b",
+    re.IGNORECASE,
+)
+
+# A bare Wikidata identifier. The label service returns the Q-number when no
+# English label exists, and that leaks into a report as if it were a name.
+QID = re.compile(r"^Q\d+$", re.IGNORECASE)
+
 # Roles too generic to establish a peer relationship. "Consultant" appearing in
 # the subject's own profile gave every consultant in the pool a perfect role
 # match, which is 30% of the relevance score.
@@ -105,6 +120,11 @@ def looks_like_person(name: str | None) -> bool:
         return False
     # A job title in the name means the headline never named the individual.
     if TITLE_TOKEN.search(raw):
+        return False
+    # A kinship word means the page described the tie instead of naming them.
+    if RELATION_TOKEN.search(raw):
+        return False
+    if QID.match(raw):
         return False
     # Every token a common noun: a masthead or an organisation, not a person.
     lowered = [w.strip(".,").lower() for w in words]
@@ -183,6 +203,26 @@ def is_media_role(roles) -> bool:
     return any(MEDIA_ROLE.search(role) for role in values)
 
 
+def usable_label(value) -> bool:
+    """Whether a label is something a reader can act on.
+
+    A bare Q-number is what Wikidata returns when an entity has no English
+    label. `scoring.rank` already drops candidates whose *name* is one; the
+    company field had no such guard, so a suggestion could read
+    "founder - Q58024".
+    """
+    text = (value or "").strip()
+    return bool(text) and not QID.match(text)
+
+
+def sanitise(candidate: dict) -> dict:
+    """Strip unusable labels from a candidate, in place."""
+    for field in ("companies", "roles"):
+        values = candidate.get(field) or []
+        candidate[field] = [v for v in values if usable_label(v)]
+    return candidate
+
+
 def _company_keys(names) -> set:
     keys = set()
     for name in names or []:
@@ -225,6 +265,9 @@ def filter_candidates(candidates: list, subject_companies, subject_name=None,
     """
     kept, dropped = [], []
     for candidate in candidates or []:
+        # Unusable labels are removed before the checks below, so a Q-number
+        # company cannot be what a candidate is judged on.
+        sanitise(candidate)
         name = candidate.get("name")
         reason = None
         if not looks_like_person(name):

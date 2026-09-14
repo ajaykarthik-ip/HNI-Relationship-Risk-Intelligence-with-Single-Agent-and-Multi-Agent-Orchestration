@@ -186,7 +186,17 @@ async def run(transport, bridge, reporter, subject, bio, found: dict,
     # candidate pool a perfect role match -- 30% of the relevance score -- to a
     # role the subject does not meaningfully hold.
     profile["roles"] = quality_people.meaningful_roles(profile.get("roles"))
-    company_qids = [c["wikidata_id"] for c in companies if c.get("wikidata_id")]
+    # Discovery writes the Q-number as `registry_id`; nothing ever creates a
+    # `wikidata_id` key on a company record, so reading that name returns an
+    # empty list on every run -- which silently disabled co-officer lookup and,
+    # with it, the whole structured half of the current network. Both names are
+    # accepted so this keeps working if the field is ever renamed.
+    company_qids = [
+        qid for qid in (
+            c.get("registry_id") or c.get("wikidata_id") for c in companies
+        )
+        if qid and str(qid).upper().startswith("Q")
+    ]
 
     # Independent of each other: one asks what the companies do, the other who
     # else sits on them. V1 runs them back to back.
@@ -208,8 +218,10 @@ async def run(transport, bridge, reporter, subject, bio, found: dict,
 
     # PS2 asks for key employees in the company, which nothing was answering.
     company_names = {
-        c["wikidata_id"]: (c.get("canonical_name") or c.get("name"))
-        for c in companies if c.get("wikidata_id")
+        (c.get("registry_id") or c.get("wikidata_id")):
+            (c.get("canonical_name") or c.get("name"))
+        for c in companies
+        if (c.get("registry_id") or c.get("wikidata_id"))
     }
     employees = await _key_employees(bridge, reporter, company_qids,
                                      company_names)

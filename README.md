@@ -41,6 +41,27 @@ Review                     a second read that raises issues, never edits
 Dashboard · JSON · CSV
 ```
 
+### Two engines
+
+The same pipeline runs on either of two execution engines, chosen per run:
+
+| | |
+|---|---|
+| **V1 · Single agent** | The original. One request at a time per host, everything in sequence. Eight to ten minutes for a full screening. |
+| **V2 · Multi-agent** | Six agents — identity, discovery, evidence, full text, analysis, network — working concurrently under a per-host policy. Measured at 40 to 130 seconds on the same subjects. |
+
+V2 asks **exactly the same questions**: the same fourteen adverse checks, the
+same query ladder, the same evidence caps, the same deterministic scorer. It is
+faster because the work is scheduled concurrently, never because there is less
+of it. Politeness is unchanged where it is owed — article bodies are still
+fetched one at a time per publisher.
+
+V1 is frozen and remains the baseline. A hash manifest of every V1 module is
+checked by the test suite, so an accidental edit fails loudly and names the
+file. `backend/bench.py` runs both engines on one subject with a cold cache
+each and checks seven quality gates — speed with a different answer is a
+failure, not a result.
+
 ### The identity step
 
 The pipeline used to guess who you meant and research whatever it picked. When
@@ -116,26 +137,66 @@ Both API keys are optional. Without them the pipeline runs on free, keyless
 sources and says so in the output — candidates are ranked by a deterministic
 scorer, and evidence falls back to keyword classification.
 
+One setting is worth more than either key:
+
+```
+AFFLUENSE_CONTACT=you@yourdomain.example
+```
+
+Wikimedia's User-Agent policy refuses requests that carry no real contact, and
+a refusal there removes registry company links, role dates for the tenure
+filter, and the whole structured network at once. Set it and those come back.
+
 There is also a CLI:
 
 ```bash
-python run_screening.py "Ratan Tata" "Tata Sons"
+python run_screening.py "Mukesh Ambani" "Reliance Industries"
 python run_network.py   "Azim Premji" "Wipro"
+```
+
+And a benchmark, which fixes the subject and gives each engine its own cold
+cache so neither can win on a warm one:
+
+```bash
+python bench.py "Mukesh Ambani" --company "Reliance Industries"
 ```
 
 ## What a run costs
 
 Firecrawl bills per page; OpenAI bills per token, counted from what the API
 itself reports. Nothing is estimated. A screening run is a few rupees of
-OpenAI and around 60 Firecrawl credits, and the dashboard shows the breakdown.
+OpenAI and around 60 Firecrawl credits; a network run is a fraction of that.
+The dashboard shows the breakdown per service, per purpose.
 
 News, Wikipedia, Wikidata and the exchange rate are free and keyless.
+
+Both engines meter identically, and the concurrent one is not more expensive:
+it makes the same requests, just sooner. Every budget is run-scoped, so a loop
+bug costs one call rather than an account.
+
+## Tests
+
+```bash
+cd backend
+pytest -q
+```
+
+No network access: every test runs against fixed inputs or a fake fetcher, so
+the suite is deterministic and finishes in seconds. `test_v2_isolation.py` is
+the one to run first — it checks that V1 is unchanged and that nothing under
+`affluense/` imports V2.
 
 ## Further reading
 
 - `backend/ARCHITECTURE.md` — design decisions, data sources, limitations
 - `backend/README.md` — CLI flags and the HTTP API
-- `UPGRADE-PLAN.md` — how the current design was arrived at
+- `backend/V2-ARCHITECTURE.md` — the concurrent engine: agents, host policy,
+  budgets, and what stays sequential on purpose
+- `backend/PS2-SOURCES.md` — network sources, and where LinkedIn or Crunchbase
+  would be integrated
+- `v1-flow.md` — the pipeline stage by stage
+- `v2-plan.md` — the plan V2 was built from, including the measured bottlenecks
+- `UPGRADE-PLAN-v0.md` — how the original design was arrived at
 - `CLAUDE.md` — working rules for this repository
 
 ## Limitations
@@ -146,3 +207,11 @@ automated collection. This is the single biggest limit on network coverage.
 Coverage is indexed public sources only. Court and registry filings that are
 not published online are out of scope, and absence of adverse evidence is
 never reported as proof that none exists.
+
+Most companies found by page extraction carry no registry identifier, which is
+what limits officer lookup and tenure dates. The report says so per run rather
+than presenting a thin network as a complete one.
+
+Social media is deliberately not scraped: the platforms are login-walled, a
+fetch returns 403 and spends a credit for nothing. The budget goes to registry
+and business pages instead.
